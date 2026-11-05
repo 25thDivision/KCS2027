@@ -4,6 +4,9 @@ keys.json
 # reference solutions (excluded from the distributed repo)
 solutions/
 
+# external reference clone (NVIDIA Ising-Decoding)
+Ising-decoding/
+
 # generated data / training artifacts
 dataset/
 checkpoint/

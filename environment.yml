@@ -1,0 +1,32 @@
+# KCS2 environment (verified 2026-11-04 on the lab GPU server: 3x RTX 2080 Ti, driver 595, no system nvcc)
+#
+# Create (the server's mamba writes to root-owned /opt/conda/envs when given -n, so pass -p):
+#   mamba env create -f environment.yml -p ~/.conda/envs/KCS2
+#   conda activate KCS2
+#
+# Then install the GraphMamba kernels from the official prebuilt wheels. They are NOT listed below
+# on purpose: building from the PyPI sdist needs nvcc (absent here) and mamba-ssm's declared
+# dependencies (tilelang, apache-tvm-ffi, quack-kernels) are Mamba-3-only and can disturb torch.
+# Wheel tags must match torch 2.9.x + CUDA 12 + cxx11abi TRUE + cp312 as installed by requirements.txt.
+#   pip install --no-deps https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.7.0/causal_conv1d-1.7.0+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+#   pip install --no-deps https://github.com/state-spaces/mamba/releases/download/v2.3.2.post1/mamba_ssm-2.3.2.post1+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+#
+# Sanity check:
+#   python -c "import torch, mamba_ssm, causal_conv1d; print(torch.__version__, torch.cuda.is_available())"
+name: KCS2
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      # core pins (numpy, scipy, stim, PyMatching, qiskit, qiskit-aer, qiskit-ibm-runtime, torch, matplotlib)
+      - -r requirements.txt
+      # test / IonQ (to be pinned into requirements.txt in Phase 1)
+      - pytest==9.2.0
+      - qiskit-ionq==1.1.1
+      # runtime dependencies of mamba_ssm (pure python); mamba_ssm itself: see header
+      - einops==0.8.2
+      - ninja==1.13.2
+      - packaging==26.3
+      - transformers==5.22.1
