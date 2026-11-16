@@ -9,7 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 GATES = [
     "verification/verify_equivalence.py",
-    "verification/verify_rotatedSurface3.py",
+    "verification/verify_rotatedSurface.py",
     "verification/verify_color.py",
 ]
 

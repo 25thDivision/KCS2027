@@ -49,9 +49,9 @@ def logical_qubit_indices(code="heavyhex", distance=3):
     key = (code, normalize_distance(code, distance))
     if key == ("heavyhex", 33):
         return LOGICAL_Z_DATA_IDX
-    if key == ("surface", 3):
-        from circuits.rotatedSurface.rotatedSurface3 import LOGICAL_Z_IDX
-        return LOGICAL_Z_IDX
+    if key in (("surface", 3), ("surface", 5)):
+        from circuits.rotatedSurface.rotatedSurface import surface_def
+        return surface_def(key[1]).LOGICAL_Z_IDX
     if code in CODES:
         raise NotImplementedError(
             f"no logical-Z definition for --code {code} --distance "

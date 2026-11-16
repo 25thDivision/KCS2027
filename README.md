@@ -19,20 +19,19 @@
 | 항목 | 상태 |
 |---|---|
 | heavyhex (3,3) 회로, 데이터셋, 게이트, 하드웨어 경로 | 동작 |
-| surface d=3 회로, 데이터셋, 게이트, 하드웨어 경로 | 동작 |
+| surface d=3, d=5 회로, 데이터셋, 게이트, 하드웨어 경로 | 동작 |
 | heavyhex (3,5), (5,3) | 미구현 |
-| surface d=5 | 미구현 |
 | color d=3, d=5 | 미구현 |
-| MWPM 기준선 (heavyhex (3,3), surface d=3) | 동작 |
+| MWPM 기준선 (heavyhex (3,3), surface d=3, d=5) | 동작 |
 | 모델 8종 (`cnn`, `gcn`, `gcnii`, `gat`, `appnp`, `gnn`, `graph_transformer`, `graph_mamba`) | 동작 |
-| 하이브리드 2종 (heavyhex (3,3), surface d=3) | 동작 |
-| NVIDIA pre-decoder (surface d=3) | 동작, 체크포인트는 따로 받아야 함 |
+| 하이브리드 2종 (heavyhex (3,3), surface d=3, d=5) | 동작 |
+| NVIDIA pre-decoder (surface d=3, d=5) | 동작, 체크포인트는 따로 받아야 함 |
 - 미구현인 (코드, distance)를 지정하면 파일을 만들기 전에 `NotImplementedError`로 멈춘다. 구현된 조합 목록은 `dataset_generation.IMPLEMENTED`다.
 - `pipeline.sbatch`는 `config.json`의 `pipeline.distances`에 적힌 조합 중 구현된 것만 돌고 나머지는 건너뛴다고 출력한다.
 # 디렉터리 구조
 ---
 - `circuits/heavyhex/` heavy-hex 회로 정의, 37큐빗 하드웨어 회로, coupling map 조회, DD
-- `circuits/rotatedSurface/` rotated surface code d=3 회로와 하드웨어 임베딩
+- `circuits/rotatedSurface/` rotated surface code 회로(홀수 distance 공용)와 하드웨어 임베딩
 - `circuits/placement.py` 캘리브레이션을 반영한 자동 배치
 - `dataset_generation/` Stim 회로 생성기, 데이터셋 생성(`make_dataset.py`), QPU 캘리브레이션 평균 프로파일(`make_qpu_avg_profile.py`), 설정 읽기와 코드·distance 축 정의(`__init__.py`)
 - `model/` 모델 레지스트리(`__init__.py`), 모델 파일 8개, 공용 손실과 그래프 기반 클래스(`common.py`), detector 그래프(`graph.py`), 데이터 로더(`data.py`)
@@ -67,7 +66,7 @@ python -c "import torch, mamba_ssm, causal_conv1d; print(torch.__version__, torc
 ```bash
 # 0) 규약 게이트. ALL PASS를 확인한 뒤에만 데이터셋을 만든다
 python verification/verify_equivalence.py          # heavyhex
-python verification/verify_rotatedSurface3.py      # surface
+python verification/verify_rotatedSurface.py       # surface (d=3, d=5)
 # 1) 데이터셋 (--code 기본 heavyhex, --distance 기본 3)
 python dataset_generation/make_dataset.py --smoke
 python dataset_generation/make_dataset.py --code surface

@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-Hardware-shaped rotatedSurface3 (d=3 rotated surface) Stim circuit with
+Hardware-shaped rotated surface Stim circuit (any odd distance) with
 QPU-averaged calibration noise
 ============================================================
-The rotatedSurface3 counterpart of heavyhex37_qpu_stim.py. Mirrors
-circuits.rotatedSurface.rotatedSurface3.RotatedSurface3Hardware gate-for-gate on the 17 patch qubits
-(9 data + 8 ancillas, local indices in ALL_COORDS order): the same fixed
+The surface counterpart of heavyhex37_qpu_stim.py. Mirrors
+circuits.rotatedSurface.rotatedSurface.RotatedSurfaceHardware gate-for-gate
+on the 2*d*d - 1 patch qubits (d*d data + d*d - 1 ancillas, local indices
+in ALL_COORDS order; d = 3: 17 qubits, data 0-8, ancillas 9-16): the same fixed
 hook-safe 4-layer CX schedule (Z_CORNER_ORDER / X_CORNER_ORDER) and NO
-ancilla reset — raw ancilla bits accumulate exactly like on hardware and
+ancilla reset - raw ancilla bits accumulate exactly like on hardware and
 check values are recovered by the per-ancilla XOR chain
-(rotatedSurface3.check_values).
+(rotatedSurface.check_values).
 
 Noise attachment (profile mode "qpu_avg_v1" with code "surface", built
 by make_qpu_avg_profile.py --code surface; every rate is the
 run-averaged calibration value of THAT patch qubit / edge, keyed by the
-rotatedSurface3 LOCAL index 0..16 — data 0-8, ancillas 9-16 in CYCLE_ORDER — and
+patch LOCAL index (data first, then the ancillas in CYCLE_ORDER) and
 "i-j" for edges):
   * each CX               -> DEPOLARIZE2(edge 2Q error) on its qubits
   * each H                -> DEPOLARIZE1(qubit 1Q error, sx proxy)
@@ -30,17 +31,17 @@ NOT modeled (documented limitation, also in README.md):
   * coherent (non-Pauli) errors; the transpiled 1Q-gate structure is
     approximated by one sx-proxy depolarizing event per H
   * ibm_miami is CZ-native: the calibrated 2Q error is a CZ benchmark
-    value attached at the CX position — a proxy, exactly like the ECR
+    value attached at the CX position - a proxy, exactly like the ECR
     proxy of the heavy-hex generator
 
 Detectors are defined on the RAW measurement record via XOR expansion of
 the per-ancilla chains (raw_j ^ raw_{j-1} = check value), in EXACTLY the
-detector order of rotatedSurface3_stim._append_detectors — so the tensor / MWPM
+detector order of rotatedSurface_stim._append_detectors - so the tensor / MWPM
 reconstruction logic is unchanged and the DEM can feed PyMatching.
 
-verification/verify_rotatedSurface3.py section [G] enforces detector determinism,
+verification/verify_rotatedSurface.py section [G] enforces detector determinism,
 single-error signature agreement vs Aer, and check-value-level
-equivalence with the abstract rotatedSurface3 Stim circuit; qpu/* surface dataset
+equivalence with the abstract surface Stim circuit; qpu/* surface dataset
 generation must NOT proceed before ALL PASS (incl. [G]).
 """
 import sys
@@ -53,12 +54,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from circuits.rotatedSurface.rotatedSurface3 import (  # noqa: E402
-    ALL_COORDS, DATA_COORDS, DIDX, NUM_DATA, N_CHECKS, N_LAYERS, L,
-    CYCLE_ORDER, CHECK_DEFS, X_NAMES, Z_NAMES, Z_POS, LOGICAL_Z_IDX,
-    check_values)
-from dataset_generation.rotatedSurface3_stim import (  # noqa: E402
-    AIDX, num_detectors, split_rotatedSurface3_sample, check_matrix_from_dict_rotatedSurface3)
+from circuits.rotatedSurface.rotatedSurface import (  # noqa: E402
+    surface_def, N_LAYERS, check_values)
+from dataset_generation.rotatedSurface_stim import (  # noqa: E402
+    num_detectors, split_rotatedSurface_sample,
+    check_matrix_from_dict_rotatedSurface)
 
 _ZERO = {"readout": {}, "error_1q": {}, "error_2q": {}}
 
@@ -88,7 +88,7 @@ def _rates(profile):
     prof = profile or _ZERO
     if profile is not None and prof.get("code", "heavyhex") != "surface":
         raise ValueError(
-            "rotatedSurface3_qpu_stim needs a --code surface qpu_avg profile "
+            "rotatedSurface_qpu_stim needs a --code surface qpu_avg profile "
             f"(got code '{prof.get('code', 'heavyhex')}')")
     ro = _capped({int(k): v for k, v in prof.get("readout", {}).items()},
                  "readout")
@@ -134,64 +134,70 @@ class _Builder:
         return self.n_meas - 1
 
 
-def build_rotatedSurface3_qpu_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
-                                profile=None, inject=None):
-    """Hardware-shaped rotatedSurface3 Stim circuit (initial state |0>_L only).
+def build_rotatedSurface_qpu_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
+                                          profile=None, inject=None,
+                                          distance=3):
+    """Hardware-shaped surface Stim circuit (initial state |0>_L only).
 
     Args mirror heavyhex37_qpu_stim.build_qpu_stim_circuit:
         profile: surface qpu_avg_v1 profile dict (None -> noiseless,
                  used by the verification gate)
-        inject:  (pauli, data_coord, after_cycle) — deterministic single
+        inject:  (pauli, data_coord, after_cycle) - deterministic single
                  error for verification (same meaning as
-                 rotatedSurface3.RotatedSurface3Hardware.build_circuit)
+                 rotatedSurface.RotatedSurfaceHardware.build_circuit)
     """
+    S = surface_def(distance)
+    if profile is not None and int(profile.get("distance", 3)) != S.DISTANCE:
+        raise ValueError(
+            f"qpu_avg profile is for surface d={profile.get('distance', 3)}"
+            f", not d={S.DISTANCE}")
     b = _Builder(profile)
-    b.c.append("R", list(range(len(ALL_COORDS))))
+    b.c.append("R", list(range(len(S.ALL_COORDS))))
     if p > 0:
         b.c.append("X_ERROR" if noise_type == "X" else "Z_ERROR",
-                   list(range(NUM_DATA)), p)
+                   list(range(S.NUM_DATA)), p)
 
     for cyc in range(num_cycles):
-        for n in X_NAMES:
-            b.h(AIDX[n])
+        for n in S.X_NAMES:
+            b.h(S.AIDX[n])
         for layer in range(N_LAYERS):
-            for name in CYCLE_ORDER:
-                ctype = CHECK_DEFS[name][0]
-                for ll, coord in CHECK_DEFS[name][3]:
+            for name in S.CYCLE_ORDER:
+                ctype = S.CHECK_DEFS[name][0]
+                for ll, coord in S.CHECK_DEFS[name][3]:
                     if ll != layer:
                         continue
                     if ctype == "Z":
-                        b.cx(DIDX[coord], AIDX[name])
+                        b.cx(S.DIDX[coord], S.AIDX[name])
                     else:
-                        b.cx(AIDX[name], DIDX[coord])
-        for n in X_NAMES:
-            b.h(AIDX[n])
-        for name in CYCLE_ORDER:             # measure in bit order
-            a = AIDX[name]
+                        b.cx(S.AIDX[name], S.DIDX[coord])
+        for n in S.X_NAMES:
+            b.h(S.AIDX[n])
+        for name in S.CYCLE_ORDER:             # measure in bit order
+            a = S.AIDX[name]
             m = b.measure(a)
             prev = b.prev_meas.get(a)
             b.chain[(name, cyc)] = [m] if prev is None else [m, prev]
             b.prev_meas[a] = m
         if inject is not None and inject[2] == cyc:
             pauli, dc, _ = inject
-            b.c.append(pauli.upper(), [DIDX[dc]])
+            b.c.append(pauli.upper(), [S.DIDX[dc]])
 
     fin = {}
-    for c in DATA_COORDS:                    # final data readout
-        fin[c] = b.measure(L[c])
+    for c in S.DATA_COORDS:                    # final data readout
+        fin[c] = b.measure(S.L[c])
 
     # ---- detectors: XOR expansion of the raw record, in the exact
-    # ---- order of rotatedSurface3_stim._append_detectors -------------------------
+    # ---- order of rotatedSurface_stim._append_detectors ------------------
     M = b.n_meas
-    assert M == N_CHECKS * num_cycles + NUM_DATA
+    assert M == S.N_CHECKS * num_cycles + S.NUM_DATA
     rec = lambda k: stim.target_rec(k - M)  # noqa: E731
 
     def value_set(name, cyc):
         return set(b.chain[(name, cyc)])
 
     for cyc in range(num_cycles):
-        for name in CYCLE_ORDER:
-            if name in Z_NAMES:
+        for name in S.CYCLE_ORDER:
+            if name in S.Z_NAMES:
                 s = value_set(name, cyc)
                 if cyc >= 1:
                     s = s ^ value_set(name, cyc - 1)
@@ -199,40 +205,44 @@ def build_rotatedSurface3_qpu_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
             elif cyc >= 1:
                 s = value_set(name, cyc) ^ value_set(name, cyc - 1)
                 b.c.append("DETECTOR", [rec(k) for k in sorted(s)])
-    for j in Z_POS:
-        name = CYCLE_ORDER[j]
-        s = {fin[qc] for qc in CHECK_DEFS[name][1]}
+    for j in S.Z_POS:
+        name = S.CYCLE_ORDER[j]
+        s = {fin[qc] for qc in S.CHECK_DEFS[name][1]}
         s ^= value_set(name, num_cycles - 1)
         b.c.append("DETECTOR", [rec(k) for k in sorted(s)])
     b.c.append("OBSERVABLE_INCLUDE",
-               [rec(fin[DATA_COORDS[i]]) for i in LOGICAL_Z_IDX], 0)
-    assert b.c.num_detectors == num_detectors(num_cycles)
+               [rec(fin[S.DATA_COORDS[i]]) for i in S.LOGICAL_Z_IDX], 0)
+    assert b.c.num_detectors == num_detectors(num_cycles, distance)
     return b.c
 
 
-def sample_rotatedSurface3_qpu_flips(circuit, shots, num_cycles, seed=None):
+def sample_rotatedSurface_qpu_flips(circuit, shots, num_cycles, seed=None,
+                                    distance=3):
     """FlipSimulator flips of the RAW record -> (check-value flip matrix
-    (shots, 8C), final-data flips (shots, 9)).
+    (shots, N_CHECKS*C), final-data flips (shots, NUM_DATA)).
 
     The raw syn flips pass through the same per-ancilla XOR chain as
-    hardware raw bits (rotatedSurface3.check_values), which is linear, so the
-    result is the flip of each CHECK VALUE — directly comparable to the
-    abstract circuit's MR bits and consumable by syndrome_tensor_rotatedSurface3 /
+    hardware raw bits (rotatedSurface.check_values), which is linear, so the
+    result is the flip of each CHECK VALUE - directly comparable to the
+    abstract circuit's MR bits and consumable by syndrome_tensor_rotatedSurface /
     the detector reconstructions."""
     fs = stim.FlipSimulator(batch_size=shots, seed=seed,
                             disable_stabilizer_randomization=True)
     fs.do(circuit)
     mf = fs.get_measurement_flips().T.astype(np.uint8)
-    raw_syn, dat = split_rotatedSurface3_sample(mf, num_cycles)
-    vals = check_values(raw_syn, num_cycles)
-    return check_matrix_from_dict_rotatedSurface3(vals, num_cycles), dat
+    raw_syn, dat = split_rotatedSurface_sample(mf, num_cycles, distance)
+    vals = check_values(raw_syn, num_cycles, distance)
+    return check_matrix_from_dict_rotatedSurface(vals, num_cycles,
+                                                 distance), dat
 
 
 if __name__ == "__main__":
-    c = build_rotatedSurface3_qpu_stim_circuit(3)
-    print(f"noiseless: qubits={c.num_qubits} meas={c.num_measurements} "
-          f"detectors={c.num_detectors} (expected {num_detectors(3)})")
-    det = c.compile_detector_sampler().sample(shots=256,
-                                              append_observables=True)
-    print(f"noiseless detectors+observable all-zero: "
-          f"{np.asarray(det).sum() == 0}")
+    for d in (3, 5):
+        c = build_rotatedSurface_qpu_stim_circuit(3, distance=d)
+        print(f"d={d} noiseless: qubits={c.num_qubits} "
+              f"meas={c.num_measurements} detectors={c.num_detectors} "
+              f"(expected {num_detectors(3, d)})")
+        det = c.compile_detector_sampler().sample(shots=256,
+                                                  append_observables=True)
+        print(f"  noiseless detectors+observable all-zero: "
+              f"{np.asarray(det).sum() == 0}")

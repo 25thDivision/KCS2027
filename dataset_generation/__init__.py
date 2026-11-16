@@ -42,7 +42,7 @@ DISTANCES = {
 }
 
 # (code, distance) pairs whose circuits and generators exist so far
-IMPLEMENTED = {("heavyhex", 33), ("surface", 3)}
+IMPLEMENTED = {("heavyhex", 33), ("surface", 3), ("surface", 5)}
 
 
 def normalize_distance(code, distance=3):

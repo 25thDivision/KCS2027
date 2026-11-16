@@ -86,7 +86,7 @@ PY
 gate_of() {     # 코드 -> 규약 게이트 스크립트
     case "$1" in
         heavyhex) echo "verification/verify_equivalence.py" ;;
-        surface)  echo "verification/verify_rotatedSurface3.py" ;;
+        surface)  echo "verification/verify_rotatedSurface.py" ;;
         color)    echo "verification/verify_color.py" ;;
     esac
 }
@@ -132,7 +132,11 @@ echo "=== [1/6] 규약 게이트 ==="
 for cd in "${COMBOS[@]}"; do
     code="${cd%%:*}"; dist="${cd##*:}"
     echo "--- gate: $code distance=$dist ---"
-    python "$(gate_of "$code")"
+    if [ "$code" = "surface" ]; then     # 게이트가 distance별로 돈다
+        python "$(gate_of "$code")" --distance "$dist"
+    else
+        python "$(gate_of "$code")"
+    fi
 done
 
 echo "=== [2/6] QPU 수거 (완료된 pending 잡 분석, 나머지 이월) ==="

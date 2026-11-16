@@ -73,18 +73,18 @@ def code_adapter(code, distance=3):
                          for n in CHECK_AT},
             coord={n: ANC_COORD[CHECK_DEFS[n][2]] for n in CHECK_AT},
             grid=GRID_SHAPE, num_detectors=num_detectors)
-    if key == ("surface", 3):
-        from dataset_generation.rotatedSurface3_stim import num_detectors
-        from circuits.rotatedSurface.rotatedSurface3 import (
-            CYCLE_ORDER, Z_NAMES, Z_POS, CHECK_DEFS, ANC_GRID, DIDX,
-            GRID_SHAPE)
+    if key in (("surface", 3), ("surface", 5)):
+        from functools import partial
+        from dataset_generation.rotatedSurface_stim import num_detectors
+        from circuits.rotatedSurface.rotatedSurface import surface_def
+        S = surface_def(key[1])
         return dict(
-            check_at=list(CYCLE_ORDER), z_names=set(Z_NAMES),
-            z_pos=list(Z_POS),
-            support_idx={n: [DIDX[c] for c in CHECK_DEFS[n][1]]
-                         for n in CYCLE_ORDER},
-            coord=dict(ANC_GRID), grid=GRID_SHAPE,
-            num_detectors=num_detectors)
+            check_at=list(S.CYCLE_ORDER), z_names=set(S.Z_NAMES),
+            z_pos=list(S.Z_POS),
+            support_idx={n: [S.DIDX[c] for c in S.CHECK_DEFS[n][1]]
+                         for n in S.CYCLE_ORDER},
+            coord=dict(S.ANC_GRID), grid=S.GRID_SHAPE,
+            num_detectors=partial(num_detectors, distance=key[1]))
     if code in CODES:
         raise NotImplementedError(
             f"no detector graph for --code {code} --distance {distance} yet")

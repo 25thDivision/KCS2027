@@ -56,12 +56,14 @@ ORIENTATION = "ZH"                    # NVIDIA public alias O4
 
 
 def _surface_modules(distance):
-    """(circuit module, stim module helpers) of the surface path."""
+    """(SurfaceDef, detector reconstruction) of the surface path."""
     require_implemented("surface", distance)
-    from circuits.rotatedSurface import rotatedSurface3 as circ
-    from dataset_generation.rotatedSurface3_stim import (
-        detectors_from_dataset_rotatedSurface3 as det_fn)
-    return circ, det_fn
+    from functools import partial
+    from circuits.rotatedSurface.rotatedSurface import surface_def
+    from dataset_generation.rotatedSurface_stim import (
+        detectors_from_dataset_rotatedSurface)
+    return surface_def(distance), partial(
+        detectors_from_dataset_rotatedSurface, distance=distance)
 
 
 def _anchor(ctype, cells):
@@ -120,7 +122,7 @@ class SurfaceLayout:
 
     def detector_index(self, num_cycles):
         """{("Z"|"X", name, cycle) | ("F", name): column} in the detector
-        order of dataset_generation/rotatedSurface3_stim._append_detectors:
+        order of dataset_generation/rotatedSurface_stim._append_detectors:
         per cycle over CYCLE_ORDER (Z every cycle, X from cycle 1), then
         the final-Z detectors."""
         idx, k = {}, 0

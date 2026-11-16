@@ -45,24 +45,24 @@ def build_matching(num_cycles, error_type, p, noise_profile,
     """Matching decoder from the DEM of the noisy reference circuit.
 
     Plain 4-parameter profiles use the code's abstract circuit (25q
-    heavy-hex / 17q rotatedSurface3); QPU calibration profiles (mode: qpu_avg_v1)
+    heavy-hex / rotated surface); QPU calibration profiles (mode: qpu_avg_v1)
     use the code's hardware-shaped circuit — detectors follow the same
     order either way, so the same detector reconstructions feed any of
     the Matching objects."""
     require_implemented(code, distance)
     if code == "surface":
         if is_qpu_profile(noise_profile):
-            from dataset_generation.rotatedSurface3_qpu_stim import (
-                build_rotatedSurface3_qpu_stim_circuit)
+            from dataset_generation.rotatedSurface_qpu_stim import (
+                build_rotatedSurface_qpu_stim_circuit)
             prof = (NOISE_PROFILES[noise_profile]
                     if isinstance(noise_profile, str) else noise_profile)
-            circuit = build_rotatedSurface3_qpu_stim_circuit(num_cycles, error_type,
-                                                  p, prof)
+            circuit = build_rotatedSurface_qpu_stim_circuit(
+                num_cycles, error_type, p, prof, distance=distance)
         else:
-            from dataset_generation.rotatedSurface3_stim import (
-                build_rotatedSurface3_stim_circuit)
-            circuit = build_rotatedSurface3_stim_circuit(num_cycles, error_type, p,
-                                              noise_profile)
+            from dataset_generation.rotatedSurface_stim import (
+                build_rotatedSurface_stim_circuit)
+            circuit = build_rotatedSurface_stim_circuit(
+                num_cycles, error_type, p, noise_profile, distance=distance)
     elif is_qpu_profile(noise_profile):
         from dataset_generation.heavyhex37_qpu_stim import (
             build_qpu_stim_circuit)
@@ -96,8 +96,10 @@ def mwpm_ler_from_dataset(npz_file, matching=None):
                                   float(d["error_rate"]),
                                   str(d["noise_profile"]), code, distance)
     if code == "surface":
-        from dataset_generation.rotatedSurface3_stim import detectors_from_tensor_rotatedSurface3
-        det = detectors_from_tensor_rotatedSurface3(d["features"], d["labels"])
+        from dataset_generation.rotatedSurface_stim import (
+            detectors_from_tensor_rotatedSurface)
+        det = detectors_from_tensor_rotatedSurface(d["features"], d["labels"],
+                                                   distance)
     else:
         det = detectors_from_tensor(d["features"], d["labels"])
     return decode_ler(matching, det, d["logical_labels"])[0]
@@ -115,10 +117,13 @@ def mwpm_ler_from_hardware(check_mat, dat, num_cycles, matching,
     """
     require_implemented(code, distance)
     if code == "surface":
-        from dataset_generation.rotatedSurface3_stim import (
-            detectors_from_dataset_rotatedSurface3, logical_label_rotatedSurface3)
-        det = detectors_from_dataset_rotatedSurface3(check_mat, dat, num_cycles)
-        l, pred = decode_ler(matching, det, logical_label_rotatedSurface3(dat))
+        from dataset_generation.rotatedSurface_stim import (
+            detectors_from_dataset_rotatedSurface,
+            logical_label_rotatedSurface)
+        det = detectors_from_dataset_rotatedSurface(check_mat, dat,
+                                                    num_cycles, distance)
+        l, pred = decode_ler(
+            matching, det, logical_label_rotatedSurface(dat, distance))
     else:
         from dataset_generation.heavyhex33_stim import logical_label
         det = detectors_from_dataset(check_mat, dat, num_cycles)

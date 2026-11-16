@@ -47,6 +47,7 @@ def model_from_prefix(prefix):
 CODE_SPECS = {
     ("heavyhex", 33): {"num_qubits": 17, "grid": (4, 5)},
     ("surface", 3): {"num_qubits": 9, "grid": (4, 4)},
+    ("surface", 5): {"num_qubits": 25, "grid": (6, 6)},
     ("color", 3): {"num_qubits": 7, "grid": None},
     ("color", 5): {"num_qubits": 19, "grid": None},
 }

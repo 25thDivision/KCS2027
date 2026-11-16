@@ -13,8 +13,8 @@ Changes from the original:
 Input : (B, 2*num_cycles + 1, H, W) uint8 tensor
         - heavyhex: 4x5 diamond embedding of the 8 ancillas
           (dataset_generation/heavyhex33_stim.py, ANC_COORD)
-        - surface: 4x4 plaquette-vertex grid
-          (circuits/rotatedSurface/rotatedSurface3.py, ANC_GRID)
+        - surface: (d+1)x(d+1) plaquette-vertex grid
+          (circuits/rotatedSurface/rotatedSurface.py, ANC_GRID)
         - the (code, distance) pair selects the grid via model.code_spec
         - channels alternate [Z-plane, X-plane] per cycle; the LAST
           channel holds the final-Z detector bits (prepare_features /

@@ -179,33 +179,39 @@ def cmd_submit(args):
         # 체인 동안 고정, 임계값 위반 시 재탐색, --reselect-layout).
         # 회로/clbit/logical 정의가 전부 패치-로컬 좌표라 어떤 동형
         # 배치든 의미가 보존된다. 실패 시 정적 45도 임베딩 폴백.
-        from circuits.rotatedSurface.rotatedSurface3 import (
-            RotatedSurface3Hardware, ALL_COORDS, embedding_for_surface,
+        from circuits.rotatedSurface.rotatedSurface import (
+            RotatedSurfaceHardware, surface_def, embedding_for_surface,
             validate_backend_surface, required_edges_surface)
         from circuits.placement import resolve_placement
-        qc = RotatedSurface3Hardware(args.cycles).build_circuit()
+        s_dist = normalize_distance("surface", args.distance)
+        ALL_COORDS = surface_def(s_dist).ALL_COORDS
+        qc = RotatedSurfaceHardware(args.cycles, s_dist).build_circuit()
         cm = json.load(open(coupling_path))
         try:
-            static_map = embedding_for_surface(args.backend)
+            static_map = embedding_for_surface(args.backend, s_dist)
         except RuntimeError:
             static_map = None
+        # the pinned-placement file is per (backend, code); d=3 keeps the
+        # plain "surface" key, other distances get their own
+        place_key = "surface" if s_dist == 3 else f"surface_d{s_dist}"
         mapping, placement_info = resolve_placement(
-            args.backend, "surface", _ROOT / "hardware",
-            ALL_COORDS, required_edges_surface(), qc,
+            args.backend, place_key, _ROOT / "hardware",
+            ALL_COORDS, required_edges_surface(s_dist), qc,
             [tuple(e) for e in cm["coupling_map"]], backend.target,
             static_mapping=static_map,
             reselect=getattr(args, "reselect_layout", False))
         if mapping is None:
             print("WARNING: 유효한 자동 배치 없음 — 정적 45도 임베딩 폴백")
-            validate_backend_surface(coupling_path)
-            mapping = embedding_for_surface(args.backend)
+            validate_backend_surface(coupling_path, distance=s_dist)
+            mapping = embedding_for_surface(args.backend, s_dist)
             placement_info = {"fallback": "static",
                               **(placement_info or {})}
         else:
             eset = {tuple(sorted(e)) for e in cm["coupling_map"]}
-            for u, v in required_edges_surface():
+            for u, v in required_edges_surface(s_dist):
                 assert tuple(sorted((mapping[u], mapping[v]))) in eset
-            print(f"backend '{args.backend}': rotatedSurface3 17q patch "
+            print(f"backend '{args.backend}': rotatedSurface d={s_dist} "
+                  f"{len(ALL_COORDS)}q patch "
                   f"placed (auto, qubits {min(mapping.values())}"
                   f"–{max(mapping.values())})")
         layout = [mapping[c] for c in ALL_COORDS]
@@ -421,9 +427,10 @@ def _plan_pubs(shots, pubs, max_shots, max_experiments):
     return shots_per_pub, per_job
 
 
-def _latest_qpu_profile(backend, code):
-    """Newest registered qpu/<backend>_<code>_* profile name (or None) —
-    the collect path uses it for the MWPM DEM weights."""
+def _latest_qpu_profile(backend, code, distance=3):
+    """Newest registered qpu/<backend>_<code>_* profile name of the same
+    distance (or None) — the collect path uses it for the MWPM DEM
+    weights. Profiles without a "distance" field are distance 3."""
     try:
         from dataset_generation import load_config
         profs = load_config().get("noise_profiles", {})
@@ -431,7 +438,9 @@ def _latest_qpu_profile(backend, code):
         return None
     cands = [(v.get("provenance", {}).get("generated_at", ""), k)
              for k, v in profs.items()
-             if k.startswith(f"qpu/{backend}_{code}_")]
+             if k.startswith(f"qpu/{backend}_{code}_")
+             and (normalize_distance(code, v.get("distance", 3))
+                  == normalize_distance(code, distance))]
     return max(cands)[1] if cands else None
 
 
@@ -556,12 +565,19 @@ def cmd_analyze(args):
     dtag = distance_tag(code, distance)
 
     if code == "surface":
-        from circuits.rotatedSurface.rotatedSurface3 import (
-            check_values as cv_fn, N_CHECKS as n_checks, NUM_DATA as n_data)
-        from dataset_generation.rotatedSurface3_stim import (
-            check_matrix_from_dict_rotatedSurface3 as mat_fn,
-            syndrome_tensor_rotatedSurface3 as tensor_fn,
-            logical_label_rotatedSurface3 as logical_fn)
+        from functools import partial
+        from circuits.rotatedSurface import rotatedSurface as rs
+        from dataset_generation import rotatedSurface_stim as rss
+        s_dist = normalize_distance("surface", distance)
+        n_checks = rs.surface_def(s_dist).N_CHECKS
+        n_data = rs.surface_def(s_dist).NUM_DATA
+        cv_fn = partial(rs.check_values, distance=s_dist)
+        mat_fn = partial(rss.check_matrix_from_dict_rotatedSurface,
+                         distance=s_dist)
+        tensor_fn = partial(rss.syndrome_tensor_rotatedSurface,
+                            distance=s_dist)
+        logical_fn = partial(rss.logical_label_rotatedSurface,
+                             distance=s_dist)
     else:
         cv_fn, n_checks, n_data = check_values, N_CHECKS, 17
         mat_fn, tensor_fn, logical_fn = (check_matrix_from_dict,
@@ -828,7 +844,8 @@ def cmd_collect(args):
         if all(n == "DONE" for n in names):
             print(f"  {label}: DONE — 분석 시작")
             mwpm_prof = (_latest_qpu_profile(ent.get("backend"),
-                                             ent.get("code"))
+                                             ent.get("code"),
+                                             ent.get("distance", 3))
                          or args.mwpm_profile)
             ns = argparse.Namespace(
                 job_id=jids[0], npz=None, cycles=3,

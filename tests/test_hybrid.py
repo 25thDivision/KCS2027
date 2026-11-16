@@ -8,8 +8,8 @@ from decoders.hybrid import (
 from model import code_spec, get_model_class, get_model_module
 
 CYCLES = 3
-CASES = [("heavyhex", 3), ("surface", 3)]
-PARAMS = [pytest.param(c, d, id=c) for c, d in CASES]
+CASES = [("heavyhex", 3), ("surface", 3), ("surface", 5)]
+PARAMS = [pytest.param(c, d, id=f"{c}{d}") for c, d in CASES]
 
 
 class _FixedQubits(torch.nn.Module):

@@ -143,21 +143,29 @@ def code_generator(code, noise, cycles, et, p, distance=3):
                 f"noise profile '{noise}' is a '{prof_code}' calibration "
                 f"profile — it cannot generate --code {code} datasets")
     if code == "surface":
-        from dataset_generation.rotatedSurface3_stim import (
-            build_rotatedSurface3_stim_circuit, sample_flips_rotatedSurface3,
-            syndrome_tensor_rotatedSurface3, logical_label_rotatedSurface3)
-        from circuits.rotatedSurface.rotatedSurface3 import GRID_SHAPE, NUM_DATA
+        from functools import partial
+        from dataset_generation.rotatedSurface_stim import (
+            build_rotatedSurface_stim_circuit, sample_flips_rotatedSurface,
+            syndrome_tensor_rotatedSurface, logical_label_rotatedSurface)
+        from circuits.rotatedSurface.rotatedSurface import surface_def
+        S = surface_def(distance)
+        tensor_fn = partial(syndrome_tensor_rotatedSurface, distance=distance)
+        logical_fn = partial(logical_label_rotatedSurface, distance=distance)
         if is_qpu_profile(noise):
-            # calibration-averaged profile -> hardware-shaped 17q circuit
-            from dataset_generation.rotatedSurface3_qpu_stim import (
-                build_rotatedSurface3_qpu_stim_circuit, sample_rotatedSurface3_qpu_flips)
-            return (build_rotatedSurface3_qpu_stim_circuit(cycles, et, p,
-                                                NOISE_PROFILES[noise]),
-                    sample_rotatedSurface3_qpu_flips, syndrome_tensor_rotatedSurface3,
-                    logical_label_rotatedSurface3, GRID_SHAPE, NUM_DATA)
-        return (build_rotatedSurface3_stim_circuit(cycles, et, p, noise),
-                sample_flips_rotatedSurface3, syndrome_tensor_rotatedSurface3,
-                logical_label_rotatedSurface3, GRID_SHAPE, NUM_DATA)
+            # calibration-averaged profile -> hardware-shaped circuit
+            from dataset_generation.rotatedSurface_qpu_stim import (
+                build_rotatedSurface_qpu_stim_circuit,
+                sample_rotatedSurface_qpu_flips)
+            return (build_rotatedSurface_qpu_stim_circuit(
+                        cycles, et, p, NOISE_PROFILES[noise],
+                        distance=distance),
+                    partial(sample_rotatedSurface_qpu_flips,
+                            distance=distance),
+                    tensor_fn, logical_fn, S.GRID_SHAPE, S.NUM_DATA)
+        return (build_rotatedSurface_stim_circuit(cycles, et, p, noise,
+                                                  distance=distance),
+                partial(sample_flips_rotatedSurface, distance=distance),
+                tensor_fn, logical_fn, S.GRID_SHAPE, S.NUM_DATA)
     if is_qpu_profile(noise):
         # calibration-averaged profile -> hardware-shaped 37q circuit
         from dataset_generation.heavyhex37_qpu_stim import (

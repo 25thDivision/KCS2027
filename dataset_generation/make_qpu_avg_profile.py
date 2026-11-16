@@ -32,7 +32,7 @@ move the patch between runs; legacy runs without a layout fall back to
 the static embedding), and the arithmetic average is then taken in
 patch-label space (per key, over the runs where it is present):
   * heavyhex: 37q patch physical labels (ALL_PHYS order)
-  * surface : rotatedSurface3 patch LOCAL indices 0..16
+  * surface : rotated-surface patch LOCAL indices (d=3: 0..16)
               (ALL_COORDS order — data 0-8, ancillas 9-16 in
               CYCLE_ORDER); edges from required_edges_surface()
 
@@ -48,7 +48,7 @@ properties.json. The profile stores provenance (run ids, timestamps,
 per-run source, code, generation time) but NO local absolute paths.
 
 Consumers: heavyhex profiles -> heavyhex37_qpu_stim (37q circuit),
-surface profiles -> rotatedSurface3_qpu_stim (17q circuit). Plain 4-parameter
+surface profiles -> rotatedSurface_qpu_stim. Plain 4-parameter
 profiles keep using the abstract generators. Profiles with a "mode" key
 are excluded from the default training grid (ALL_NOISE) — select them
 explicitly with -n qpu/<name>.
@@ -70,6 +70,8 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
+from dataset_generation import (  # noqa: E402
+    normalize_distance, distance_tag, require_implemented)
 from circuits.heavyhex.heavyhex_37q import (  # noqa: E402
     ALL_PHYS, embedding_for, required_edges)
 
@@ -174,8 +176,9 @@ def extract_run(run_dir):
 # ------------------------------------------------------------------
 # run selection / averaging / patch mapping
 # ------------------------------------------------------------------
-def select_runs(runs_dir, backend, n_runs, code):
-    """Latest n_runs non-dry-run folders of ONE backend and one code.
+def select_runs(runs_dir, backend, n_runs, code, distance=3):
+    """Latest n_runs non-dry-run folders of ONE backend, one code and
+    one distance (job.json "distance"; missing = 3).
 
     job.json's "code" field filters the code family; runs without the
     field (pre-code-axis submissions) count as heavyhex. Backends are
@@ -189,6 +192,9 @@ def select_runs(runs_dir, backend, n_runs, code):
         if meta.get("dry_run"):
             continue
         if meta.get("code", "heavyhex") != code:
+            continue
+        if (normalize_distance(code, meta.get("distance", 3))
+                != normalize_distance(code, distance)):
             continue
         # timestamp = actual run start (recorded at collection) when
         # available, else submission time
@@ -228,19 +234,22 @@ def average_profiles(per_run):
     return out
 
 
-def _patch_layout(code, backend):
+def _patch_layout(code, backend, distance=3):
     """(patch labels, patch edges, label -> device qubit) of a code.
 
-    heavyhex labels = 37q physical labels; surface labels = rotatedSurface3 LOCAL
-    indices (ALL_COORDS order — the module's existing constant, no new
-    labeling scheme)."""
+    heavyhex labels = 37q physical labels; surface labels = the patch's
+    LOCAL indices (ALL_COORDS order of surface_def(distance) - the
+    module's existing constant, no new labeling scheme)."""
     if code == "surface":
-        from circuits.rotatedSurface.rotatedSurface3 import (
-            ALL_COORDS, L, embedding_for_surface, required_edges_surface)
-        emb_c = embedding_for_surface(backend)
-        labels = [L[c] for c in ALL_COORDS]           # 0..16
+        from circuits.rotatedSurface.rotatedSurface import (
+            surface_def, embedding_for_surface, required_edges_surface)
+        S = surface_def(distance)
+        ALL_COORDS, L = S.ALL_COORDS, S.L
+        emb_c = embedding_for_surface(backend, distance)
+        labels = [L[c] for c in ALL_COORDS]           # d=3: 0..16
         dev_of = {L[c]: emb_c[c] for c in ALL_COORDS}
-        edges = [(L[u], L[v]) for u, v in required_edges_surface()]
+        edges = [(L[u], L[v])
+                 for u, v in required_edges_surface(distance)]
         return labels, edges, dev_of
     emb = embedding_for(backend)
     return list(ALL_PHYS), required_edges(), dict(emb)
@@ -290,6 +299,9 @@ def main():
                     help="code family — filters runs by job.json's "
                          "'code' (missing = heavyhex) and selects the "
                          "patch mapping")
+    ap.add_argument("--distance", type=int, default=3,
+                    help="code distance - filters runs by job.json's "
+                         "'distance' (missing = 3) and selects the patch")
     ap.add_argument("--suffix", default=None,
                     help="optional explicit name suffix "
                          "(qpu/<backend>_<code>_avg<N>_<date>_<suffix>)")
@@ -300,10 +312,15 @@ def main():
                     help="print the profile instead of writing it")
     args = ap.parse_args()
 
+    require_implemented(args.code, args.distance)
+    dist = normalize_distance(args.code, args.distance)
+    dtag = distance_tag(args.code, dist)
     backend, picked = select_runs(args.runs_dir, args.backend, args.n_runs,
-                                  args.code)
-    print(f"backend {backend} / {args.code}: averaging {len(picked)} run(s)")
-    labels, patch_edges, static_dev_of = _patch_layout(args.code, backend)
+                                  args.code, dist)
+    print(f"backend {backend} / {args.code} {dtag}: averaging "
+          f"{len(picked)} run(s)")
+    labels, patch_edges, static_dev_of = _patch_layout(args.code, backend,
+                                                       dist)
     per_run, sources = [], []
     for _, sub, d in picked:
         calib, src = extract_run(d)
@@ -353,13 +370,16 @@ def main():
     # (run_started_at when collected, else submitted_at; YYYYMMDD)
     newest = max(ts for _, ts, _ in picked)
     date8 = newest[:10].replace("-", "")
-    name = f"qpu/{backend}_{args.code}_avg{len(picked)}_{date8}"
+    # d3 keeps the original name; other distances carry their tag
+    code_part = args.code if dtag == "d3" else f"{args.code}_{dtag}"
+    name = f"qpu/{backend}_{code_part}_avg{len(picked)}_{date8}"
     if args.suffix:
         name += f"_{args.suffix}"
     profile = {
         "mode": "qpu_avg_v1",
         "backend": backend,
         "code": args.code,
+        "distance": dist,
         "n_runs": len(picked),
         "provenance": {
             "run_ids": run_ids,
@@ -404,9 +424,10 @@ def main():
         f.write("\n")
     print(f"registered -> {args.config} [noise_profiles]")
     gate = ("verification/verify_equivalence.py" if args.code == "heavyhex"
-            else "verification/verify_rotatedSurface3.py")
+            else "verification/verify_rotatedSurface.py")
     print(f"next: python dataset_generation/make_dataset.py --code "
-          f"{args.code} -n {name} --smoke   (gate: {gate} ALL PASS first)")
+          f"{args.code} --distance {args.distance} -n {name} --smoke   "
+          f"(gate: {gate} ALL PASS first)")
 
 
 if __name__ == "__main__":
