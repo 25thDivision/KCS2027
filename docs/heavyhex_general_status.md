@@ -42,14 +42,20 @@ heavyhex (3,5)와 (5,3)에 대해, (3,3) 경로가 지키는 계약이 이 저�
 | 배치 (`embedding_for`, 자동 배치) | 있음 | 회로 생성기 안의 번호 규칙만 있음 |
 | `run_hw.py` 제출, 분석 | 있음 | 없음 |
 - (3,5), (5,3)에 있는 것은 코드 정의와 하드웨어 회로 생성기 두 종류, 그리고 그 회로의 check_values와 무노이즈 검증 스크립트다. 데이터셋, 학습, MWPM, 게이트, 제출 경로는 없다.
-- 하드웨어 회로 생성기는 coupling map 파일(`coupling_ibm_boston.json` 등)이 있어야 생성된다. rung ancilla의 물리 번호를 coupling map에서 찾기 때문이다. 지금 서버에는 coupling map 파일이 없고 `keys.json`에 `ibm_token`이 비어 있어 받아 올 수 없다. 그래서 이번 조사에서 (3,5), (5,3) 하드웨어 회로를 실제로 만들어 보지는 못했다.
+- 하드웨어 회로 생성기는 coupling map 파일(`coupling_ibm_boston.json` 등)이 있어야 생성된다. rung ancilla의 물리 번호를 coupling map에서 찾기 때문이다. `fetch_coupling.fetch`로 받은 ibm_pittsburgh와 ibm_boston의 coupling map(둘 다 156큐빗, 방향 포함 352 edge)으로 두 생성기를 실행해 보았고 (3,5), (5,3) 모두 생성됐다 (2026-11-17).
 - `fetch_coupling.py`의 설명문은 `heavyhex_depthopt`라는 모듈 이름을 적고 있는데 실제 파일은 `heavyhex_depth_opt.py`다.
 # 하드웨어에 들어가는지
 ---
-- 65큐빗이고 data 물리 번호가 최대 151이다. 번호 규칙상 156큐빗 Heron 장비의 번호 범위 안이다.
-- 실제로 coupling map에 맞는지는 `GeneralDiamondCircuit`을 그 장비의 coupling map으로 생성해 봐야 안다 (생성기가 필요한 연결을 assert로 확인한다). 위 이유로 지금은 확인하지 못했다.
+- 65큐빗이고 data 물리 번호가 최대 151이다. 156큐빗 Heron 장비의 번호 범위 안이다.
+- ibm_pittsburgh와 ibm_boston의 coupling map에서 생성기가 필요한 연결을 assert로 확인하며 회로를 만들었다. 2 cycle 회로를 만들어 2로 나눈 값은 아래와 같고 (3,5)와 (5,3)이 같다.
+| 생성기 | 큐빗 | depth | CX |
+|---|---|---|---|
+| `GeneralDiamondCircuit` | 65 | 48 | 247 |
+| `DepthOptDiamond` | 65 | 26 | 223 |
+- 캘리브레이션을 반영한 배치(불량 큐빗 회피)는 확인하지 않았다. 생성기는 번호 규칙으로 정한 한 위치만 쓴다.
 # 범위 선택지
 ---
+2026-11-17에 석현님이 (3,5), (5,3) 구현을 보류하기로 정했다. 아래는 다시 시작할 때 고를 선택지다.
 계획서는 최소 목표를 Stim 데이터셋 생성과 학습, MWPM 기준선, 게이트로 적었고 하드웨어 제출은 확인 뒤 결정으로 남겼다.
 ## 가. 시뮬레이션만
 ---
@@ -60,7 +66,7 @@ heavyhex (3,5)와 (5,3)에 대해, (3,3) 경로가 지키는 계약이 이 저�
 ---
 - 가에 더해 `DepthOptDiamond`를 하드웨어 회로로 붙이고, Stim과 Aer의 등가 게이트, 65큐빗 배치, QPU 프로파일 경로, `run_hw.py` 제출과 분석을 만든다.
 - 장점은 (3,3)과 같은 계약이 된다는 것이다.
-- 단점은 양이 가의 두세 배이고, `ibm_token`과 coupling map이 있어야 시작할 수 있다는 것이다. 65큐빗 무노이즈 Aer 검증은 Clifford 회로라 가능하지만 실제로 돌려 확인해야 한다.
+- 단점은 양이 가의 두세 배라는 것이다. 65큐빗 무노이즈 Aer 검증은 Clifford 회로라 가능하지만 실제로 돌려 확인해야 한다.
 ## 다. (3,5), (5,3) 제외
 ---
 - 범위에서 빼고 (3,3)만 둔다. 확정 결정 9와 어긋나므로 계획서 변경이 필요하다.

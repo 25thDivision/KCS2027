@@ -167,7 +167,7 @@ def ensure_coupling_json(backend="ibm_yonsei"):
         import json
         from circuits.heavyhex.fetch_coupling import fetch
         keys = json.load(open(keys_path))
-        fetch(backend, token=keys.get("ibm_token"),
+        fetch(backend, token=keys.get("ibm_API"),
               instance=keys.get("ibm_instance"), outdir=str(_ROOT))
     except Exception as e:
         print(f"WARNING: coupling fetch failed ({e}) — continuing, "

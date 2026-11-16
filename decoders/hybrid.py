@@ -3,18 +3,19 @@
 Hybrid decoders: MWPM + ML and ML + MWPM
 ========================================
 baseline/mwpm.py predicts only the observable flip, so the hybrids use a
-per-qubit MWPM on the Z syndrome of the FINAL data readout:
+per-qubit MWPM, pymatching.Matching(H_z), that turns a Z syndrome into an
+X-correction mask over the data qubits. H_z comes from the code
+definition (model.graph.code_adapter: the Z-check supports in final-Z
+detector order). Two Z syndromes of a shot are involved:
 
-    s = H_z . final_bits          (simulation: npz "labels", the final
-                                   measurement flips; hardware: the
-                                   measured final data bits)
-    Matching(H_z).decode(s) -> X-correction mask over the data qubits
+    z_last = the Z-check values of the LAST cycle (ancilla measurements;
+             the Z plane of the last cycle of the syndrome tensor)
+    s      = H_z . final_bits, the Z syndrome of the final data readout
+             (simulation: npz "labels", the final measurement flips;
+             hardware: the measured final data bits)
 
-H_z comes from the code definition (model.graph.code_adapter: the
-Z-check supports in final-Z detector order).
-
-  MWPM+ML   c1 = Matching(H_z).decode(s)
-            r  = s ^ H_z . c1
+  MWPM+ML   c1 = Matching(H_z).decode(z_last)
+            r  = s ^ H_z . c1  (= s ^ z_last: the final-Z detector bits)
             c2 = (qubit head > 0) on an input that is zero except for r
                  in the final-Z detector slots; shots with r = 0 skip
                  the model (c2 = 0)
@@ -23,12 +24,15 @@ Z-check supports in final-Z detector order).
             c2 = Matching(H_z).decode(r)
   both      logical flip = parity of (c1 ^ c2) over LOGICAL_Z
 
-Matching(H_z) returns a correction with H_z . c = s whenever s is
-matchable, and every syndrome of the codes here is (each has weight-1
-columns, i.e. a boundary). So in MWPM+ML the residual r is always 0, the
-model is never consulted, and MWPM+ML equals the final-syndrome MWPM
-alone for every model. In ML+MWPM the matching completes the model's
-correction to one that reproduces the final syndrome.
+Matching(H_z) returns a correction that reproduces its input syndrome
+(every syndrome of the codes here is matchable: each H_z has weight-1
+columns, i.e. a boundary). In MWPM+ML the matching therefore removes
+what the ancillas saw at the last cycle and the model is left with the
+disagreement between the ancillas and the data readout: errors after
+the last cycle and measurement errors of the last cycle. (Decoding s
+itself in stage 1 would leave r = 0 for every shot and never reach the
+model.) In ML+MWPM the matching completes the model's correction to one
+that reproduces the final syndrome.
 """
 import sys
 from pathlib import Path
@@ -70,6 +74,14 @@ class FinalSyndromeMatcher:
         """(shots, num_qubits) data bits -> (shots, num_z_checks)."""
         bits = np.asarray(bits).astype(np.int64)
         return ((bits @ self.H.T.astype(np.int64)) & 1).astype(np.uint8)
+
+    def last_cycle_syndrome(self, features):
+        """(shots, 2C, H, W) syndrome tensor -> (shots, num_z_checks):
+        the Z-check values of the last cycle (its Z plane, read at the
+        Z-ancilla cells)."""
+        features = np.asarray(features, dtype=np.uint8)
+        plane = features[:, features.shape[1] - 2]
+        return np.stack([plane[:, r, c] for r, c in self.cells], axis=1)
 
     def decode(self, syndrome):
         """(shots, num_z_checks) -> (shots, num_qubits) correction mask."""
@@ -120,7 +132,7 @@ def hybrid_predictions(model, mod, features, final_bits, code, distance=3,
     q_logits    optional (shots, num_qubits) per-qubit logits already
                 computed on the real input (skips one model pass)
     Returns {"mwpm_ml": (shots,), "ml_mwpm": (shots,), "mwpm": (shots,)};
-    "mwpm" is the final-syndrome MWPM alone (stage 1 of MWPM+ML)."""
+    "mwpm" is stage 1 of MWPM+ML alone (the last-cycle matching)."""
     matcher = matcher or FinalSyndromeMatcher(code, distance)
     features = np.asarray(features, dtype=np.uint8)
     final_bits = np.asarray(final_bits, dtype=np.uint8)
@@ -128,7 +140,7 @@ def hybrid_predictions(model, mod, features, final_bits, code, distance=3,
     s = matcher.syndrome(final_bits)
 
     # MWPM + ML
-    c1 = matcher.decode(s)
+    c1 = matcher.decode(matcher.last_cycle_syndrome(features))
     r = s ^ matcher.syndrome(c1)
     todo = np.nonzero(r.any(axis=1))[0]
     combined = c1.copy()

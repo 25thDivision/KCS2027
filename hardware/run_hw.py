@@ -108,7 +108,7 @@ def load_keys():
         sys.exit(f"keys.json not found at {path}. "
                  f"Copy keys.example.json to keys.json and fill it in.")
     keys = json.load(open(path))
-    for k in ("ibm_token", "ibm_instance"):
+    for k in ("ibm_API", "ibm_instance"):
         if not keys.get(k) or keys[k].startswith("YOUR_"):
             sys.exit(f"keys.json: '{k}' is not set.")
     return keys
@@ -116,7 +116,7 @@ def load_keys():
 
 def get_service(keys):
     from qiskit_ibm_runtime import QiskitRuntimeService
-    return QiskitRuntimeService(token=keys["ibm_token"],
+    return QiskitRuntimeService(token=keys["ibm_API"],
                                 instance=keys["ibm_instance"])
 
 
@@ -169,7 +169,7 @@ def cmd_submit(args):
 
     # 1) coupling map + backend handle, then 2) the code's hardware
     #    circuit and its device placement
-    coupling_path = fetch(args.backend, token=keys["ibm_token"],
+    coupling_path = fetch(args.backend, token=keys["ibm_API"],
                           instance=keys["ibm_instance"], outdir=str(RUNS_DIR))
     service = get_service(keys)
     backend = service.backend(args.backend)

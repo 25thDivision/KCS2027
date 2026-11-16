@@ -11,7 +11,7 @@
 | Accurate | `nvidia/Ising-Decoder-SurfaceCode-1-Accurate` | `ising_decoder_surface_code_1_accurate_r13_v1.0.86_fp16.safetensors` | 13 | 4 |
 - 받는 방법은 `conda activate KCS2` 후 `hf auth login`, 이어서 `hf download <저장소> --local-dir Ising-decoding/models/`다. 두 저장소 각각에서 접근 승인을 받아야 한다.
 - Fast 파일의 메타데이터는 `model_id 1`, `num_filters [128, 128, 128, 4]`, `kernel_size [3, 3, 3, 3]`, `receptive_field 9`, `quant_format fp16`, `model_version predecoder_memory_v1`이다. 파라미터 수는 912772개다.
-- Accurate의 model_id 4는 `code/model/registry.py`의 R 계산식(R = 1 + 합(k - 1))으로 6층 k=3이 R 13이 되는 것에서 대응시킨 것이다. 파일 메타데이터로는 아직 확인하지 못했다(접근 승인 전).
+- Accurate 파일의 메타데이터는 `model_id 4`, `num_filters [128, 128, 128, 128, 128, 4]`, `kernel_size [3, 3, 3, 3, 3, 3]`, `receptive_field 13`, `quant_format fp16`이다. 크기는 3596688 바이트다.
 # 모델과 로더
 ---
 - 레지스트리는 `code/model/registry.py`의 `get_model_spec(model_id)`다. model_id는 1 ~ 5와 "B"(color 전용 cascade)다. 반환값 `PublicModelSpec`에 `num_filters`, `kernel_size`, `receptive_field`, `model_version`이 있다.

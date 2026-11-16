@@ -109,7 +109,7 @@ Stim 회로와 QPU 회로는 check-value 수준에서 비트 단위로 일치해
 - 모델 인터페이스는 `forward(x) -> (qubit_logits, logical_logits)`, 모듈 수준 `compute_loss(...) -> (total, loss_logical, loss_qubit)`, 모듈 수준 `prepare_features(features, final_bits, code, distance)`다.
 # keys.json
 ---
-QPU 접근 정보는 저장소 루트의 `keys.json`에서만 읽는다. `keys.example.json`을 복사해 `ibm_token`과 `ibm_instance`(CRN)를 채운다. `keys.json`은 `.gitignore` 대상이고, 없으면 파이프라인의 QPU 수거와 제출 단계를 건너뛴다.
+QPU 접근 정보는 저장소 루트의 `keys.json`에서만 읽는다. `keys.example.json`을 복사해 `ibm_API`와 `ibm_instance`(CRN)를 채운다. `keys.json`은 `.gitignore` 대상이고, 없으면 파이프라인의 QPU 수거와 제출 단계를 건너뛴다.
 # Slurm
 ---
 ```bash

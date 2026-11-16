@@ -62,8 +62,7 @@ def test_residual_slots_match_prepare_features(code, distance):
 
 @pytest.mark.parametrize("code, distance", PARAMS)
 def test_decode_reproduces_syndrome(code, distance):
-    """Every syndrome is matched exactly, so MWPM+ML never has a
-    residual."""
+    """Every syndrome is matched exactly."""
     m = FinalSyndromeMatcher(code, distance)
     bits = random_bits(code, distance, 2000, seed=1)
     s = m.syndrome(bits)
@@ -125,8 +124,87 @@ def test_ml_then_mwpm_completes_the_model(code, distance):
     out2 = hybrid_predictions(oracle, mod, feats, bits, code, distance,
                               q_logits=bits.astype(np.float32) * 2 - 1)
     assert np.array_equal(out2["ml_mwpm"], out["ml_mwpm"])
-    # MWPM+ML equals the final-syndrome MWPM (the residual is always 0)
-    assert np.array_equal(out["mwpm_ml"], out["mwpm"])
+
+
+def random_features(code, distance, shots, seed):
+    h, w = code_spec(code, distance)["grid"]
+    return np.random.default_rng(seed).integers(
+        0, 2, (shots, 2 * CYCLES, h, w), dtype=np.uint8)
+
+
+def features_with_last_z(code, distance, z_last):
+    """All-zero syndrome tensor except the last cycle's Z-check values."""
+    m = FinalSyndromeMatcher(code, distance)
+    feats = zeros_like_features(code, distance, z_last.shape[0])
+    for i, (r, c) in enumerate(m.cells):
+        feats[:, 2 * (CYCLES - 1), r, c] = z_last[:, i]
+    return feats
+
+
+@pytest.mark.parametrize("code, distance", PARAMS)
+def test_mwpm_ml_residual_is_the_final_z_detector(code, distance):
+    """Stage 1 decodes the last-cycle Z-check values; the residual handed
+    to the model is exactly the final-Z detector channel that
+    prepare_features computes on the real input."""
+    m = FinalSyndromeMatcher(code, distance)
+    mod = get_model_module("cnn")
+    feats = random_features(code, distance, 300, seed=6)
+    bits = random_bits(code, distance, 300, seed=7)
+    z_last = m.last_cycle_syndrome(feats)
+    c1 = m.decode(z_last)
+    r = m.syndrome(bits) ^ m.syndrome(c1)
+    assert np.array_equal(r, m.syndrome(bits) ^ z_last)
+    real = np.asarray(mod.prepare_features(feats, bits, code, distance))
+    assert np.array_equal(m.residual_input(r, CYCLES)[:, -1], real[:, -1])
+    assert r.any()                              # not a vacuous check
+
+
+@pytest.mark.parametrize("code, distance", PARAMS)
+def test_mwpm_ml_skips_the_model_without_residual(code, distance):
+    """Errors that the last cycle already saw (z_last = H_z . final):
+    the matching alone decides and the model is not called."""
+    m = FinalSyndromeMatcher(code, distance)
+    nq = code_spec(code, distance)["num_qubits"]
+    err = np.eye(nq, dtype=np.uint8)            # every single data error
+    feats = features_with_last_z(code, distance, m.syndrome(err))
+
+    def never(x):
+        raise AssertionError("the model must not run when r = 0")
+
+    out = hybrid_predictions(_FixedQubits(never), get_model_module("cnn"),
+                             feats, err, code, distance,
+                             q_logits=np.zeros((nq, nq), dtype=np.float32))
+    assert np.array_equal(out["mwpm_ml"], m.logical(err))
+    assert np.array_equal(out["mwpm"], m.logical(err))
+
+
+@pytest.mark.parametrize("code, distance", PARAMS)
+def test_mwpm_ml_depends_on_the_model(code, distance):
+    """Errors after the last cycle (z_last = 0): the whole syndrome is
+    residual, so the result is the model's. A model that solves the
+    residual gives the true logical flip; one that predicts nothing does
+    not, on the shots where the error flips the logical."""
+    m = FinalSyndromeMatcher(code, distance)
+    nq = code_spec(code, distance)["num_qubits"]
+    mod = get_model_module("cnn")
+    err = np.eye(nq, dtype=np.uint8)
+    feats = zeros_like_features(code, distance, nq)
+    q_logits = np.zeros((nq, nq), dtype=np.float32)
+
+    def solve(x):                                # reads the final-Z slots
+        x = np.asarray(x.cpu())
+        r = np.stack([x[:, -1, rr, cc] for rr, cc in m.cells], axis=1)
+        return m.decode(r)
+
+    good = hybrid_predictions(_FixedQubits(solve), mod, feats, err, code,
+                              distance, q_logits=q_logits)
+    idle = hybrid_predictions(
+        _FixedQubits(lambda x: torch.zeros(x.shape[0], nq)), mod, feats,
+        err, code, distance, q_logits=q_logits)
+    assert np.array_equal(good["mwpm_ml"], m.logical(err))
+    assert not idle["mwpm_ml"].any()
+    assert not np.array_equal(good["mwpm_ml"], idle["mwpm_ml"])
+    assert not good["mwpm"].any()                # stage 1 saw nothing
 
 
 @pytest.mark.parametrize("name", ["cnn", "gnn"])
