@@ -91,6 +91,9 @@ from circuits.heavyhex.heavyhex_depth7_opt_for_37q import (  # noqa: E402
     HeavyHex37QDepthOpt, check_values, N_CHECKS)
 from circuits.heavyhex.fetch_coupling import fetch  # noqa: E402
 from circuits.heavyhex.dd_utils import apply_dd, dd_pulse_stats  # noqa: E402
+from dataset_generation import (  # noqa: E402
+    CODES, distance_tag, normalize_distance, require_implemented)
+from model import MODEL_NAMES  # noqa: E402
 
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     check_matrix_from_dict, syndrome_tensor, logical_label, ALL_NOISE)
@@ -160,6 +163,7 @@ def cmd_submit(args):
     from qiskit import transpile, qpy
     from qiskit_ibm_runtime import SamplerV2
 
+    require_implemented(args.code, args.distance)
     keys = load_keys()
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -297,7 +301,9 @@ def cmd_submit(args):
     meta = {"job_id": job_ids[0] if job_ids else None,
             "job_ids": job_ids,
             "n_pubs": sum(per_job), "shots_per_pub": shots_per_pub,
-            "backend": args.backend, "code": args.code, "cycles": args.cycles,
+            "backend": args.backend, "code": args.code,
+            "distance": normalize_distance(args.code, args.distance),
+            "cycles": args.cycles,
             "shots": args.shots, "pubs": args.pubs, "dd": args.dd,
             "initial_layout": layout,
             "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -312,6 +318,7 @@ def cmd_submit(args):
         pend = _load_pending()
         pend.append({"job_id": job_ids[0], "job_ids": job_ids,
                      "backend": args.backend, "code": args.code,
+                     "distance": meta["distance"],
                      "run_dir": run_dir.name,
                      "submitted_at": meta["submitted_at"]})
         _save_pending(pend)
@@ -530,6 +537,7 @@ def cmd_analyze(args):
     # default heavyhex (offline --npz re-analysis). backend/submitted_at
     # feed the report name and columns.
     code = getattr(args, "code", None) or "heavyhex"
+    distance = getattr(args, "distance", None) or 3
     hw_backend, submitted_at, job_id = None, None, args.job_id
     run_dir = None
     if args.job_id:
@@ -540,9 +548,12 @@ def cmd_analyze(args):
     if meta_path and meta_path.exists():
         meta = json.load(open(meta_path))
         code = meta.get("code", code)
+        distance = meta.get("distance", distance)
         hw_backend = meta.get("backend")
         submitted_at = meta.get("submitted_at")
         job_id = meta.get("job_id", job_id)
+    require_implemented(code, distance)
+    dtag = distance_tag(code, distance)
 
     if code == "surface":
         from circuits.rotatedSurface.rotatedSurface3 import (
@@ -598,19 +609,20 @@ def cmd_analyze(args):
     # MWPM baseline (DEM weights from the reference noise profile)
     from baseline.mwpm import build_matching, mwpm_ler_from_hardware
     matching = build_matching(cycles, "X", args.mwpm_p, args.mwpm_profile,
-                              code)
+                              code, distance)
     mwpm_ler, mwpm_pred = mwpm_ler_from_hardware(check_mat, dat, cycles,
                                                  matching, code,
-                                                 return_pred=True)
+                                                 return_pred=True,
+                                                 distance=distance)
     rows.append(("MWPM", mwpm_ler, std_over_pubs(pred=mwpm_pred),
                  None, None, None, None))
 
     # model head: a single --ckpt, or every matching checkpoint if none
     # was given. The architecture is INFERRED from the {MODEL}_ filename
-    # prefix (CNN_/GNN_), so one analyze evaluates cnn and gnn rows in
-    # the same report; --model narrows it to one architecture. Surface
-    # checkpoints carry the "_surface_" tag, legacy heavyhex names carry
-    # no code tag.
+    # prefix, so one analyze evaluates every architecture in the same
+    # report; --model narrows it to one. Checkpoints are matched on the
+    # "_<code>_<dtag>_" part of their name; names without any code tag
+    # are legacy heavyhex (3,3) checkpoints.
     from model import MODEL_REGISTRY
 
     def model_of(path):
@@ -629,40 +641,43 @@ def cmd_analyze(args):
             if mname is None:
                 print(f"(skipping {p.name}: unknown model prefix)")
                 continue
-            if ("_surface_" in p.name) != (code == "surface"):
+            if any(f"_{c}_" in p.name for c in CODES):
+                if f"_{code}_{dtag}_" not in p.name:
+                    continue
+            elif (code, dtag) != ("heavyhex", "d3"):
                 continue
             if args.model and mname != args.model:
                 continue
             ckpts.append((mname, p))
         if not ckpts:
-            want = args.model or "cnn/gnn"
+            want = args.model or "/".join(sorted(MODEL_REGISTRY))
             print(f"(no --ckpt and no matching checkpoint/*.pt for "
-                  f"code '{code}' / model {want}: skipping)")
+                  f"code '{code}' {dtag} / model {want}: skipping)")
     if ckpts:
         import torch
-        from model import get_model_module, get_model_class, CODE_SPECS
+        from model import get_model_module, get_model_class, code_spec
         from evaluation.metrics import ler, parity_ler_from_qubit_logits
         base_tensor = tensor_fn(check_mat, cycles)
         prepared = {}       # model name -> model-ready input tensor
         for mname, ckpt_path in ckpts:
-            mod = get_model_module(mname, args.solution)
+            mod = get_model_module(mname)
             if mname not in prepared:
-                # model-specific input prep (e.g. the GNN appends the
-                # final-Z detector channel, computed from the measured
-                # final data bits — the hardware counterpart of the
-                # simulation labels)
+                # model-specific input prep (the final-Z detector
+                # channel, computed from the measured final data bits —
+                # the hardware counterpart of the simulation labels)
                 t = base_tensor
                 if hasattr(mod, "prepare_features"):
                     t = np.asarray(mod.prepare_features(base_tensor, dat,
-                                                        code))
+                                                        code, distance))
                 prepared[mname] = t
             tensor = prepared[mname]
-            model_cls = get_model_class(mname, args.solution)
+            model_cls = get_model_class(mname)
             ckpt = torch.load(ckpt_path, map_location="cpu",
                               weights_only=False)
             model = model_cls(in_channels=2 * cycles,
-                              num_qubits=CODE_SPECS[code]["num_qubits"],
-                              code=code)
+                              num_qubits=code_spec(
+                                  code, distance)["num_qubits"],
+                              code=code, distance=distance)
             model.load_state_dict(ckpt["model_state_dict"])
             model.eval()
             preds, q_logits = [], []
@@ -675,7 +690,7 @@ def cmd_analyze(args):
             pred = np.concatenate(preds)
             model_ler = ler(pred, y_logical)
             parity_ler = parity_ler_from_qubit_logits(
-                np.concatenate(q_logits), y_logical, code)
+                np.concatenate(q_logits), y_logical, code, distance)
             ratio = model_ler / mwpm_ler if mwpm_ler else None
             # "weight from epoch <best> out of <total> trained"
             best_ep = ckpt.get("best_epoch", ckpt.get("epoch"))
@@ -772,8 +787,8 @@ def cmd_collect(args):
                          or args.mwpm_profile)
             ns = argparse.Namespace(
                 job_id=jids[0], npz=None, cycles=3,
-                code=ent.get("code"), model=args.model, ckpt=args.ckpt,
-                solution=args.solution, mwpm_profile=mwpm_prof,
+                code=ent.get("code"), distance=ent.get("distance", 3),
+                model=args.model, ckpt=args.ckpt, mwpm_profile=mwpm_prof,
                 mwpm_p=args.mwpm_p, poll=30)
             try:
                 cmd_analyze(ns)
@@ -802,10 +817,11 @@ def cmd_all(args):
 def _submit_opts(p):
     p.add_argument("--backend", default="ibm_yonsei",
                    help="ibm_yonsei (default) or ibm_boston")
-    p.add_argument("--code", choices=["heavyhex", "surface"],
-                   default="heavyhex",
-                   help="code family (surface support lands with the rotatedSurface3 "
-                        "milestone)")
+    p.add_argument("--code", choices=list(CODES), default="heavyhex",
+                   help="code family")
+    p.add_argument("--distance", type=int, default=3,
+                   help="code distance (heavyhex: 3 or 33 = (3,3), 35, 53; "
+                        "surface / color: 3, 5)")
     p.add_argument("--cycles", type=int, default=3)
     p.add_argument("--shots", type=int, default=50_000,
                    help="shots per PUB")
@@ -829,21 +845,19 @@ def _analyze_opts(p, cycles=True):
     if cycles:   # standalone analyze parser ('all' inherits submit's)
         p.add_argument("--cycles", type=int, default=3,
                        help="fallback if job metadata is missing")
-        p.add_argument("--code", choices=["heavyhex", "surface"],
-                       default=None,
+        p.add_argument("--code", choices=list(CODES), default=None,
                        help="fallback if job metadata is missing "
                             "(e.g. offline --npz re-analysis)")
-    p.add_argument("--model", choices=["cnn", "gnn"], default=None,
+        p.add_argument("--distance", type=int, default=None,
+                       help="fallback if job metadata is missing")
+    p.add_argument("--model", choices=MODEL_NAMES, default=None,
                    help="restrict the evaluation to one architecture; "
                         "default: evaluate every matching checkpoint, "
-                        "inferring cnn/gnn from the {MODEL}_ filename "
+                        "inferring the model from the {MODEL}_ filename "
                         "prefix")
     p.add_argument("--ckpt", default=None,
                    help="trained model checkpoint (.pt); omit to evaluate "
                         "every checkpoint/{MODEL}_*.pt")
-    p.add_argument("--solution", action="store_true",
-                   help="load the model class from solutions/ instead of "
-                        "model/<model>_skeleton.py")
     p.add_argument("--mwpm-profile", default=ALL_NOISE[0],
                    help="noise profile used for the MWPM DEM weights")
     p.add_argument("--mwpm-p", type=float, default=0.005)

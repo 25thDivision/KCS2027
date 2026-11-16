@@ -1,50 +1,56 @@
 """Model registry — single place that resolves --model names.
 
-Each model ships as a skeleton/solution pair with the same interface
-(README §1): a decoder class `<Class>(in_channels=2*cycles, ...)` with
-`forward(x) -> (qubit_logits, logical_logits)` plus a module-level
-`compute_loss(...) -> (total, loss_logical, loss_qubit)`.
-`get_model_module` / `get_model_class` unify skeleton vs solution loading
-for train.py and hardware/run_hw.py.
+Every model module exposes the same interface: a decoder class
+`<Class>(in_channels=2*cycles, num_qubits, code, distance, ...)` with
+`forward(x) -> (qubit_logits, logical_logits)` plus module-level
+`compute_loss(...) -> (total, loss_logical, loss_qubit)` and
+`prepare_features(features, final_bits, code, distance)`.
+`get_model_module` / `get_model_class` resolve a registry name for
+train.py and hardware/run_hw.py.
 """
 import importlib
 
-# name -> (skeleton module, solution module, decoder class name)
+from dataset_generation import normalize_distance
+
+# name -> (module path, decoder class name)
 MODEL_REGISTRY = {
-    "cnn": ("model.cnn_skeleton", "solutions.cnn_solution", "HeavyHexCNN"),
-    "gnn": ("model.gnn_skeleton", "solutions.gnn_solution", "HeavyHexGNN"),
+    "cnn": ("model.cnn", "CNNDecoder"),
+    "gnn": ("model.gnn", "GNNDecoder"),
 }
 MODEL_NAMES = sorted(MODEL_REGISTRY)
 
-# per-code model-facing constants: number of per-qubit label bits and the
-# (H, W) of the syndrome tensor planes. Both decoder classes accept
-# code=... and read these (the heavy-hex values are their defaults).
+# per-(code, distance) model-facing constants: number of per-qubit label
+# bits and the (H, W) of the syndrome tensor planes (None until the
+# code's tensor layout exists). Read through code_spec().
 CODE_SPECS = {
-    "heavyhex": {"num_qubits": 17, "grid": (4, 5)},
-    "surface": {"num_qubits": 9, "grid": (4, 4)},
+    ("heavyhex", 33): {"num_qubits": 17, "grid": (4, 5)},
+    ("surface", 3): {"num_qubits": 9, "grid": (4, 4)},
+    ("color", 3): {"num_qubits": 7, "grid": None},
+    ("color", 5): {"num_qubits": 19, "grid": None},
 }
 
 
-def get_model_module(model_name, use_solution=False):
-    """Import and return the skeleton (or solution) module of a model."""
+def code_spec(code, distance=3):
+    """Model-facing constants of one (code, distance)."""
+    key = (code, normalize_distance(code, distance))
+    if key not in CODE_SPECS:
+        raise NotImplementedError(
+            f"no model spec for --code {code} --distance {distance} yet "
+            f"(available: {sorted(CODE_SPECS)})")
+    return CODE_SPECS[key]
+
+
+def get_model_module(model_name):
+    """Import and return the module of a model."""
     try:
-        skeleton, solution, _ = MODEL_REGISTRY[model_name]
+        module_path, _ = MODEL_REGISTRY[model_name]
     except KeyError:
         raise ValueError(f"unknown model '{model_name}' "
                          f"(available: {MODEL_NAMES})")
-    target = solution if use_solution else skeleton
-    try:
-        return importlib.import_module(target)
-    except ModuleNotFoundError as e:
-        if use_solution:
-            raise ModuleNotFoundError(
-                f"{target} not found — solutions/ is not part of the "
-                f"distributed repo (drop --solution to use the skeleton)"
-            ) from e
-        raise
+    return importlib.import_module(module_path)
 
 
-def get_model_class(model_name, use_solution=False):
-    """Return the decoder class (e.g. HeavyHexCNN) of a model."""
-    mod = get_model_module(model_name, use_solution)
-    return getattr(mod, MODEL_REGISTRY[model_name][2])
+def get_model_class(model_name):
+    """Return the decoder class (e.g. CNNDecoder) of a model."""
+    mod = get_model_module(model_name)
+    return getattr(mod, MODEL_REGISTRY[model_name][1])

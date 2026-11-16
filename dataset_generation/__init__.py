@@ -28,6 +28,56 @@ CONFIG_SECTIONS = {"noise_profiles", "train", "dataset", "sweep", "cycles",
                    "pipeline"}
 
 
+# ---- code / distance axes ------------------------------------------------
+# One place for the --code / --distance values and the distance part of
+# every dataset / checkpoint / result file name.
+CODES = ("heavyhex", "surface", "color")
+
+# valid --distance values per code. heavyhex encodes (dx, dz) as the
+# two-digit number 10*dx + dz; plain 3 is accepted as shorthand for (3,3).
+DISTANCES = {
+    "heavyhex": (33, 35, 53),
+    "surface": (3, 5),
+    "color": (3, 5),
+}
+
+# (code, distance) pairs whose circuits and generators exist so far
+IMPLEMENTED = {("heavyhex", 33), ("surface", 3)}
+
+
+def normalize_distance(code, distance=3):
+    """--distance value -> canonical per-code value (heavyhex 3 -> 33)."""
+    if code not in DISTANCES:
+        raise ValueError(f"unknown code '{code}' (available: {list(CODES)})")
+    d = int(distance)
+    if code == "heavyhex" and d == 3:
+        d = 33
+    if d not in DISTANCES[code]:
+        raise ValueError(f"--distance {distance} is not valid for --code "
+                         f"{code} (available: {list(DISTANCES[code])})")
+    return d
+
+
+def distance_tag(code, distance=3):
+    """Distance part of file names: heavyhex (3,3) -> d3, (3,5) -> d35,
+    (5,3) -> d53; surface / color -> d3, d5."""
+    d = normalize_distance(code, distance)
+    return "d3" if (code, d) == ("heavyhex", 33) else f"d{d}"
+
+
+def is_implemented(code, distance=3):
+    return (code, normalize_distance(code, distance)) in IMPLEMENTED
+
+
+def require_implemented(code, distance=3):
+    """Fail early (before any file is written) on a (code, distance)
+    whose circuits are not in the repo yet."""
+    if not is_implemented(code, distance):
+        raise NotImplementedError(
+            f"--code {code} --distance {distance} is not implemented yet "
+            f"(available: {sorted(IMPLEMENTED)})")
+
+
 def load_config(path=None):
     """Read config.json (or an explicit path) with top-level-section
     validation. Missing file -> {} so hardcoded defaults apply."""

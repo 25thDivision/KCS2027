@@ -65,11 +65,28 @@
     "conda_env": "KCS2",
     "codes": [
       "heavyhex",
-      "surface"
+      "surface",
+      "color"
     ],
+    "distances": {
+      "heavyhex": [
+        33,
+        35,
+        53
+      ],
+      "surface": [
+        3,
+        5
+      ],
+      "color": [
+        3,
+        5
+      ]
+    },
     "backends": {
       "heavyhex": "ibm_pittsburgh",
-      "surface": "ibm_miami"
+      "surface": "ibm_miami",
+      "color": "ionq_forte1"
     },
     "qpu_pubs": 5,
     "profile_runs": 5,

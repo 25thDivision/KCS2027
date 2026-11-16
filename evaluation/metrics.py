@@ -42,14 +42,20 @@ from circuits.heavyhex.heavyhex_37q import DATA_PHYS, LOGICAL_Z  # noqa: E402
 LOGICAL_Z_DATA_IDX = [DATA_PHYS.index(p) for p in LOGICAL_Z]
 
 
-def logical_qubit_indices(code="heavyhex"):
+def logical_qubit_indices(code="heavyhex", distance=3):
     """Indices of the logical-Z data qubits in the per-qubit label vector
-    of the given code (derived from the code definitions)."""
-    if code == "heavyhex":
+    of the given (code, distance) (derived from the code definitions)."""
+    from dataset_generation import CODES, normalize_distance
+    key = (code, normalize_distance(code, distance))
+    if key == ("heavyhex", 33):
         return LOGICAL_Z_DATA_IDX
-    if code == "surface":
+    if key == ("surface", 3):
         from circuits.rotatedSurface.rotatedSurface3 import LOGICAL_Z_IDX
         return LOGICAL_Z_IDX
+    if code in CODES:
+        raise NotImplementedError(
+            f"no logical-Z definition for --code {code} --distance "
+            f"{distance} yet")
     raise ValueError(f"unknown code '{code}'")
 
 
@@ -94,7 +100,7 @@ def ler_from_logits(logical_logits, true_logical):
 
 
 def parity_ler_from_qubit_logits(qubit_logits, true_logical,
-                                 code="heavyhex"):
+                                 code="heavyhex", distance=3):
     """parity_LER (diagnostic): LER implied by the per-qubit head.
 
     pred_qubit_mask = (qubit_logits > 0); the predicted logical flip is
@@ -111,8 +117,8 @@ def parity_ler_from_qubit_logits(qubit_logits, true_logical,
 
     qubit_logits: (N, num_qubits) real logits from the per-qubit head
     true_logical: (N,) 0/1 — actual logical flip (LOGICAL_Z parity)
-    code:         selects the logical-Z data indices"""
+    code, distance: select the logical-Z data indices"""
     preds = (np.asarray(qubit_logits) > 0).astype(np.uint8)
     parity = np.bitwise_xor.reduce(
-        preds[:, logical_qubit_indices(code)], axis=1)
+        preds[:, logical_qubit_indices(code, distance)], axis=1)
     return ler(parity, true_logical)

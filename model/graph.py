@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-Detector graph construction for the GNN decoder — shared infrastructure
-=======================================================================
-(you don't need to modify this file; the model you complete lives in
-model/gnn_skeleton.py)
+Detector graph construction — shared by every graph decoder
+===========================================================
 
 Node = one Stim DETECTOR, in exactly the order of
 heavyhex33_stim._append_detectors (the order MWPM consumes):
@@ -46,12 +44,16 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from dataset_generation import (  # noqa: E402
+    CODES, normalize_distance)
+
 NODE_FEATS = 6          # static per-node features (see below)
 IN_FEATS = NODE_FEATS + 1   # + the detector value itself
 
 
-def code_adapter(code):
-    """Per-code detector-graph ingredients, one shape for every code:
+def code_adapter(code, distance=3):
+    """Per-(code, distance) detector-graph ingredients, one shape for
+    every code:
       check_at     ordered check names (bit order within a cycle)
       z_names      set of Z-check names
       z_pos        positions of Z-checks in check_at (final-Z order)
@@ -59,7 +61,8 @@ def code_adapter(code):
       coord        name -> (row, col) on the tensor grid
       grid         (H, W) of the tensor planes
       num_detectors(num_cycles)"""
-    if code == "heavyhex":
+    key = (code, normalize_distance(code, distance))
+    if key == ("heavyhex", 33):
         from dataset_generation.heavyhex33_stim import (
             CHECK_AT, Z_POS, ANC_COORD, DIDX, GRID_SHAPE, num_detectors)
         from circuits.heavyhex.heavyhex_37q import CHECK_DEFS, Z_STABS
@@ -70,7 +73,7 @@ def code_adapter(code):
                          for n in CHECK_AT},
             coord={n: ANC_COORD[CHECK_DEFS[n][2]] for n in CHECK_AT},
             grid=GRID_SHAPE, num_detectors=num_detectors)
-    if code == "surface":
+    if key == ("surface", 3):
         from dataset_generation.rotatedSurface3_stim import num_detectors
         from circuits.rotatedSurface.rotatedSurface3 import (
             CYCLE_ORDER, Z_NAMES, Z_POS, CHECK_DEFS, ANC_GRID, DIDX,
@@ -82,6 +85,9 @@ def code_adapter(code):
                          for n in CYCLE_ORDER},
             coord=dict(ANC_GRID), grid=GRID_SHAPE,
             num_detectors=num_detectors)
+    if code in CODES:
+        raise NotImplementedError(
+            f"no detector graph for --code {code} --distance {distance} yet")
     raise ValueError(f"unknown code '{code}'")
 
 
@@ -103,11 +109,12 @@ class GraphBuilder:
                       means no second term)
     """
 
-    def __init__(self, code="heavyhex", num_cycles=3):
+    def __init__(self, code="heavyhex", num_cycles=3, distance=3):
         self.code = code
+        self.distance = normalize_distance(code, distance)
         self.num_cycles = int(num_cycles)
         C = self.num_cycles
-        ad = code_adapter(code)
+        ad = code_adapter(code, distance)
         self.adapter = ad
         check_at, z_names, z_pos = ad["check_at"], ad["z_names"], ad["z_pos"]
         coord, support_idx = ad["coord"], ad["support_idx"]
@@ -222,7 +229,7 @@ class GraphBuilder:
         return torch.bitwise_xor(v, v2)
 
 
-def augment_features(features, final_bits, code="heavyhex"):
+def augment_features(features, final_bits, code="heavyhex", distance=3):
     """(B, 2C, H, W) syndrome tensor + final data bits -> (B, 2C+1, H, W).
 
     The extra channel holds the final-Z detector bits (support parity of
@@ -230,7 +237,7 @@ def augment_features(features, final_bits, code="heavyhex"):
     final_bits: simulation -> npz "labels" (measurement flips); hardware
     -> measured final data bits. Accepts torch tensors (any device) or
     numpy arrays; returns the same kind."""
-    ad = code_adapter(code)
+    ad = code_adapter(code, distance)
     grid_h, grid_w = ad["grid"]
     was_numpy = isinstance(features, np.ndarray)
     feats = torch.as_tensor(features)

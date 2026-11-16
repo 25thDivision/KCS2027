@@ -21,7 +21,7 @@
 # (properties_run.json, 없으면 제출 시점 스냅샷) 평균이다.
 #
 # 고정 설정은 전부 config.json의 "pipeline" 섹션에서 읽는다:
-#   conda_env / codes / backends / qpu_pubs(잡 내 PUB 수, 기본 5) /
+#   conda_env / codes / distances / backends / qpu_pubs(잡 내 PUB 수, 기본 5) /
 #   profile_runs(프로파일 평균 창, 기본 5) / shots(PUB당 샷) / train_args
 #
 # sbatch 변수는 두 개뿐:
@@ -33,9 +33,10 @@
 #   sbatch pipeline.sbatch              # 1회
 #   SMOKE=1 sbatch pipeline.sbatch      # 빠른 end-to-end 리허설
 #
-# 학습 인자에 --solution이 있으면 수거(analyze)에도 자동 전파된다.
+# 코드별 distance 목록(pipeline.distances) 중 회로·생성기가 저장소에 있는
+# (코드, distance)만 돌고 나머지는 건너뛴다(dataset_generation.IMPLEMENTED).
 # LOOPS 종료 후에도 pending이 남을 수 있다(마지막 루프의 잡은 다음 실행의
-# 수거 단계 또는 `python hardware/run_hw.py collect --solution`으로 수거).
+# 수거 단계 또는 `python hardware/run_hw.py collect`로 수거).
 
 set -eo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
@@ -57,7 +58,7 @@ conda activate "$CONDA_ENV"
 set -u
 export PYTHONUNBUFFERED=1
 
-CODES="$(pcfg codes 'heavyhex surface')"
+CODES="$(pcfg codes 'heavyhex surface color')"
 QPU_PUBS="$(pcfg qpu_pubs 5)"
 PROFILE_RUNS="$(pcfg profile_runs 5)"
 SHOTS="$(pcfg shots 50000)"
@@ -77,7 +78,8 @@ backend_of() {  # 코드 -> QPU 백엔드 (config.json pipeline.backends)
 import json, sys
 b = json.load(open("config.json")).get("pipeline", {}).get("backends", {})
 print(b.get(sys.argv[1],
-            {"heavyhex": "ibm_boston", "surface": "ibm_miami"}[sys.argv[1]]))
+            {"heavyhex": "ibm_boston", "surface": "ibm_miami",
+             "color": "ionq_forte1"}[sys.argv[1]]))
 PY
 }
 
@@ -85,30 +87,57 @@ gate_of() {     # 코드 -> 규약 게이트 스크립트
     case "$1" in
         heavyhex) echo "verification/verify_equivalence.py" ;;
         surface)  echo "verification/verify_rotatedSurface3.py" ;;
+        color)    echo "verification/verify_color.py" ;;
     esac
 }
+
+distances_of() {  # 코드 -> distance 목록 (config.json pipeline.distances)
+    python3 - "$1" <<'PY'
+import json, sys
+d = json.load(open("config.json")).get("pipeline", {}).get("distances", {})
+print(" ".join(str(x) for x in d.get(sys.argv[1], [3])))
+PY
+}
+
+implemented() {   # (코드, distance)의 회로·생성기가 저장소에 있으면 0
+    python3 - "$1" "$2" <<'PY'
+import sys
+from dataset_generation import is_implemented
+sys.exit(0 if is_implemented(sys.argv[1], sys.argv[2]) else 1)
+PY
+}
+
+# 이번 실행이 도는 "코드:distance" 목록 (구현된 것만)
+COMBOS=()
+for code in $CODES; do
+    for dist in $(distances_of "$code"); do
+        if implemented "$code" "$dist"; then
+            COMBOS+=("$code:$dist")
+        else
+            echo "--- skip: $code distance=$dist (회로·생성기 미구현) ---"
+        fi
+    done
+done
 
 # 이전 루프 잡이 락을 놓기 전에 다음 루프가 스케줄될 수 있으므로,
 # 즉시 실패(-n) 대신 최대 2시간 대기 — 루프 체인이 레이스로 죽지 않게.
 exec 9>/tmp/heavyhex_pipeline.lock
 flock -w 7200 9 || { echo "2시간 내 락 획득 실패 — 중단"; exit 1; }
 
-HW_SOLUTION=""
-case " $TRAIN_ARGS $* " in *" --solution "*) HW_SOLUTION="--solution" ;; esac
-
 echo "host=$(hostname) gpu=${CUDA_VISIBLE_DEVICES:-unset} env=$CONDA_ENV"
-echo "loop=$LOOP/$LOOPS qpu_pubs=$QPU_PUBS shots=$SHOTS profile_runs=$PROFILE_RUNS codes=$CODES smoke=${SMOKE:-0}"
+echo "loop=$LOOP/$LOOPS qpu_pubs=$QPU_PUBS shots=$SHOTS profile_runs=$PROFILE_RUNS combos=${COMBOS[*]} smoke=${SMOKE:-0}"
 echo "train_args=$TRAIN_ARGS $SMOKE_ARGS $*"
 
 echo "=== [1/6] 규약 게이트 ==="
-for code in $CODES; do
-    echo "--- gate: $code ---"
+for cd in "${COMBOS[@]}"; do
+    code="${cd%%:*}"; dist="${cd##*:}"
+    echo "--- gate: $code distance=$dist ---"
     python "$(gate_of "$code")"
 done
 
 echo "=== [2/6] QPU 수거 (완료된 pending 잡 분석, 나머지 이월) ==="
 if [[ -f keys.json ]]; then
-    python hardware/run_hw.py collect $HW_SOLUTION || \
+    python hardware/run_hw.py collect || \
         echo "WARNING: collect 실패 — 이월하고 계속"
 else
     echo "keys.json 없음 — 수거 건너뜀"
@@ -116,11 +145,13 @@ fi
 
 echo "=== [3/6] QPU 제출 (코드별 1잡 x ${QPU_PUBS} PUB, 완료는 다음 루프 수거) ==="
 if [[ -f keys.json ]]; then
-    for code in $CODES; do
+    for cd in "${COMBOS[@]}"; do
+        code="${cd%%:*}"; dist="${cd##*:}"
         backend="$(backend_of "$code")"
-        echo "--- QPU submit: $code @ $backend ---"
+        echo "--- QPU submit: $code distance=$dist @ $backend ---"
         python hardware/run_hw.py submit --backend "$backend" \
-            --code "$code" --shots "$SHOTS" --pubs "$QPU_PUBS" $HW_EXTRA
+            --code "$code" --distance "$dist" \
+            --shots "$SHOTS" --pubs "$QPU_PUBS" $HW_EXTRA
     done
 else
     echo "keys.json 없음 — QPU 제출 건너뜀"
@@ -128,40 +159,48 @@ fi
 
 echo "=== [4/6] QPU 캘리브레이션 프로파일 (최근 ${PROFILE_RUNS}개 루프 평균) ==="
 declare -A PROFILE
-for code in $CODES; do
+for cd in "${COMBOS[@]}"; do
+    code="${cd%%:*}"
     backend="$(backend_of "$code")"
+    PROFILE[$cd]=""
+    # 캘리브레이션 평균 프로파일은 IBM 백엔드 코드만 만든다
+    [[ "$backend" == ibm_* ]] || continue
     if out=$(python dataset_generation/make_qpu_avg_profile.py \
                  --code "$code" --backend "$backend" \
                  --n-runs "$PROFILE_RUNS" --suffix "loop$LOOP" 2>&1); then
         echo "$out"
-        PROFILE[$code]=$(sed -n 's/^profile \(qpu\/[^:]*\):.*/\1/p' <<< "$out" | tail -1)
-        echo "--- $code: 프로파일 ${PROFILE[$code]} 사용 ---"
+        PROFILE[$cd]=$(sed -n 's/^profile \(qpu\/[^:]*\):.*/\1/p' <<< "$out" | tail -1)
+        echo "--- $code: 프로파일 ${PROFILE[$cd]} 사용 ---"
     else
         echo "$out"
         echo "--- $code: QPU 이력 없음/생성 불가 — 이번 루프는 realistic만 ---"
-        PROFILE[$code]=""
     fi
 done
 
 echo "=== [5/6] 데이터셋 생성 ==="
-for code in $CODES; do
-    echo "--- dataset: $code (realistic) ---"
-    python dataset_generation/make_dataset.py --code "$code" $SMOKE_ARGS
-    if [[ -n "${PROFILE[$code]}" ]]; then
-        echo "--- dataset: $code (${PROFILE[$code]}) ---"
+for cd in "${COMBOS[@]}"; do
+    code="${cd%%:*}"; dist="${cd##*:}"
+    echo "--- dataset: $code distance=$dist (realistic) ---"
+    python dataset_generation/make_dataset.py --code "$code" \
+        --distance "$dist" $SMOKE_ARGS
+    if [[ -n "${PROFILE[$cd]}" ]]; then
+        echo "--- dataset: $code distance=$dist (${PROFILE[$cd]}) ---"
         python dataset_generation/make_dataset.py --code "$code" \
-            -n "${PROFILE[$code]}" $SMOKE_ARGS
+            --distance "$dist" -n "${PROFILE[$cd]}" $SMOKE_ARGS
     fi
 done
 
 echo "=== [6/6] 학습 (epoch-resume 이어서) ==="
-for code in $CODES; do
-    echo "--- train: $code (realistic 그리드) ---"
-    python train.py --code "$code" $TRAIN_ARGS $SMOKE_ARGS "$@"
-    if [[ -n "${PROFILE[$code]}" ]]; then
-        echo "--- train: $code (${PROFILE[$code]}) ---"
-        python train.py --code "$code" $TRAIN_ARGS $SMOKE_ARGS "$@" \
-            --config config.json -n "${PROFILE[$code]}"
+for cd in "${COMBOS[@]}"; do
+    code="${cd%%:*}"; dist="${cd##*:}"
+    echo "--- train: $code distance=$dist (realistic 그리드) ---"
+    python train.py --code "$code" --distance "$dist" \
+        $TRAIN_ARGS $SMOKE_ARGS "$@"
+    if [[ -n "${PROFILE[$cd]}" ]]; then
+        echo "--- train: $code distance=$dist (${PROFILE[$cd]}) ---"
+        python train.py --code "$code" --distance "$dist" \
+            $TRAIN_ARGS $SMOKE_ARGS "$@" \
+            --config config.json -n "${PROFILE[$cd]}"
     fi
 done
 
@@ -187,6 +226,6 @@ else
     echo "=== 전체 $LOOPS 루프 완료 — 미수거 pending ${PENDING_LEFT}건 ==="
     if (( PENDING_LEFT > 0 )); then
         echo "    (다음 sbatch 재제출 시 수거되거나, 수동으로:"
-        echo "     python hardware/run_hw.py collect ${HW_SOLUTION})"
+        echo "     python hardware/run_hw.py collect)"
     fi
 fi

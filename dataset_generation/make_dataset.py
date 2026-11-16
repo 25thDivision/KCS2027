@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-(3,3) Heavy-Hex CNN dataset generation
-======================================
+Stim dataset generation
+=======================
+--code {heavyhex,surface,color} and --distance select the code; the
+sample format below is written for heavyhex (3,3) and the other codes
+follow the same layout with their own grid and data-qubit count.
 Uses a fixed (error_type x error_rate) grid and per-config shot counts:
   * error_types / error_rates / noise_profiles / active_noise:
       defined in heavyhex33_stim.py
@@ -46,10 +49,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
 from dataset_generation import (  # noqa: E402
-    load_options, load_sweep, has_sweep, CONFIG_PATH)
+    load_options, load_sweep, has_sweep, CONFIG_PATH, CODES,
+    normalize_distance, distance_tag, require_implemented)
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     build_stim_circuit, sample_flips, syndrome_tensor, logical_label,
-    noise_tag, is_qpu_profile, DISTANCE, ERROR_TYPES, ERROR_RATES,
+    noise_tag, is_qpu_profile, ERROR_TYPES, ERROR_RATES,
     ALL_NOISE, NOISE_PROFILES)
 
 # Default shot counts (d=3 entries)
@@ -59,17 +63,18 @@ CHUNK = 1_000_000
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="(3,3) heavy-hex dataset generator")
+    ap = argparse.ArgumentParser(description="Stim dataset generator")
     ap.add_argument("-n", "--noise", nargs="+", default=None,
                     help=f"noise profile names (default: {ALL_NOISE})")
     ap.add_argument("-p", "--rates", nargs="+", type=float, default=None,
                     help=f"Error_Rate list (default: {ERROR_RATES})")
     ap.add_argument("-e", "--error-types", nargs="+", default=None,
                     help=f"Error_Type list (default: {ERROR_TYPES})")
-    ap.add_argument("--code", choices=["heavyhex", "surface"],
-                    default="heavyhex",
-                    help="code family; selects the dataset/<code>/ subtree "
-                         "(surface generation lands with the rotatedSurface3 milestone)")
+    ap.add_argument("--code", choices=list(CODES), default="heavyhex",
+                    help="code family; selects the dataset/<code>/ subtree")
+    ap.add_argument("--distance", type=int, default=3,
+                    help="code distance (heavyhex: 3 or 33 = (3,3), 35, "
+                         "53; surface / color: 3, 5)")
     ap.add_argument("--cycles", type=int, default=3,
                     help="number of QEC cycles (default 3, same as HW run)")
     ap.add_argument("--train-samples", type=int, default=TRAIN_SAMPLES)
@@ -121,13 +126,14 @@ def sweep_combos(args):
             for n in noises for p in rates for et in etypes]
 
 
-def code_generator(code, noise, cycles, et, p):
-    """Per-code circuit + sampling/tensor functions.
+def code_generator(code, noise, cycles, et, p, distance=3):
+    """Per-(code, distance) circuit + sampling/tensor functions.
 
     Returns (circuit, sampler, tensor_fn, logical_fn, grid, num_data).
     sampler returns (check-value matrix, final-data bits); qpu_avg
     profiles route to the hardware-shaped 37q circuit (raw flips
     XOR-chained back to check values)."""
+    require_implemented(code, distance)
     if is_qpu_profile(noise):
         # a qpu_avg profile is bound to one code family — refuse a
         # mismatch instead of attaching foreign calibration values
@@ -196,7 +202,8 @@ def main():
     n_test = 2_000 if args.smoke else args.test_samples
     outdir = Path(args.outdir)
 
-    print("=== (3,3) dataset generation ===")
+    dtag = distance_tag(args.code, args.distance)
+    print(f"=== dataset generation: {args.code} {dtag} ===")
     if args.config:
         print(f"sweep: {args.config}")
     print(f"{len(combos)} combo(s) (noise, p, type, cycles):")
@@ -213,12 +220,13 @@ def main():
         # resolve the generator BEFORE creating the folder so a refused
         # combo (e.g. code-mismatched qpu profile) leaves nothing behind
         (circuit, sampler, tensor_fn, logical_fn,
-         grid, num_data) = code_generator(args.code, noise, cycles, et, p)
+         grid, num_data) = code_generator(args.code, noise, cycles, et, p,
+                                          args.distance)
         ndir = outdir / args.code / noise_tag(noise)
         ndir.mkdir(parents=True, exist_ok=True)
         for split, n, seed_off in (("train", n_train, 0),
                                    ("test", n_test, 1)):
-            fname = ndir / (f"{split}_d{DISTANCE}_c{cycles}"
+            fname = ndir / (f"{split}_{dtag}_c{cycles}"
                             f"_p{p}_{et}.npz")
             if fname.exists():
                 print(f"   skip (exists): {fname}")
@@ -242,7 +250,9 @@ def main():
                     np.savez_compressed(
                         fh, features=f, labels=l, logical_labels=y,
                         num_cycles=cycles, noise_profile=noise,
-                        error_rate=p, error_type=et, code=args.code)
+                        error_rate=p, error_type=et, code=args.code,
+                        distance=normalize_distance(args.code,
+                                                    args.distance))
                 tmp.replace(fname)
             finally:
                 tmp.unlink(missing_ok=True)

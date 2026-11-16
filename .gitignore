@@ -1,9 +1,6 @@
 # credentials — NEVER commit
 keys.json
 
-# reference solutions (excluded from the distributed repo)
-solutions/
-
 # external reference clone (NVIDIA Ising-Decoding)
 Ising-decoding/
 
@@ -31,8 +28,6 @@ hardware/pending_jobs.json
 hardware/collect_failed.log
 hardware/placement_*.json
 
-# legacy / deprecated
-README_old.md
 # manuscript and abstract drafts (not for the public repo)
 PaperWork/
 

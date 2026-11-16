@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Training entry point — you don't need to modify this file
-==========================================================
-Trains a dual-head decoder (--model {cnn,gnn}; the skeleton file you
-complete lives at model/<name>_skeleton.py) on the Stim datasets and logs
-the metrics per epoch. Checkpoint selection is by best validation
-head-LER (the loss is LER-first), with patience-based early stopping.
---code {heavyhex,surface} selects the code family (dataset subtree and
-result/checkpoint tag).
+Training entry point
+====================
+Trains a dual-head decoder (--model, see model.MODEL_REGISTRY; the model
+lives at model/<name>.py) on the Stim datasets and logs the metrics per
+epoch. Checkpoint selection is by best validation head-LER (the loss is
+LER-first), with patience-based early stopping.
+--code {heavyhex,surface,color} and --distance select the code family
+and distance (dataset subtree and result/checkpoint tag).
 
 Metric status: the **head-LER** (logical head) is the official metric.
 `ECR (diagnostic, sim-only)` and `parity_LER (diagnostic)` are reported
@@ -22,7 +22,6 @@ Usage:
   python train.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.005
   python train.py --all                      # full noise x rate grid
   python train.py --config other_sweep.json  # alternate sweep file (see below)
-  python train.py --solution ...             # reference model, if you have solutions/
 
 Config file (config.json at the repo root, auto-loaded when it
 exists): its "train" section replaces the hyperparameter defaults here,
@@ -57,11 +56,12 @@ _ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ROOT))
 
 from dataset_generation import (  # noqa: E402
-    load_options, has_sweep, CONFIG_PATH)
+    load_options, has_sweep, CONFIG_PATH, CODES, distance_tag,
+    require_implemented)
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
-    noise_tag, DISTANCE, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
+    noise_tag, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
 from model import (  # noqa: E402
-    get_model_module, get_model_class, MODEL_NAMES, CODE_SPECS)
+    get_model_module, get_model_class, MODEL_NAMES, code_spec)
 from model.data import load_split, FastTensorDataLoader  # noqa: E402
 from evaluation.metrics import (  # noqa: E402
     ecr, bit_accuracy, ler_from_logits, parity_ler_from_qubit_logits)
@@ -76,14 +76,15 @@ LR = 1e-3
 def parse_args():
     ap = argparse.ArgumentParser(description="Train a QEC decoder model")
     ap.add_argument("--model", choices=MODEL_NAMES, default="cnn",
-                    help="decoder architecture (model/<name>_skeleton.py); "
+                    help="decoder architecture (model/<name>.py); "
                          "reflected in result/checkpoint names "
                          "({MODEL}_{tag})")
-    ap.add_argument("--code", choices=["heavyhex", "surface"],
-                    default="heavyhex",
+    ap.add_argument("--code", choices=list(CODES), default="heavyhex",
                     help="code family; selects dataset/<code>/ and is part "
-                         "of the result/checkpoint tag (surface lands with "
-                         "the rotatedSurface3 milestone)")
+                         "of the result/checkpoint tag")
+    ap.add_argument("--distance", type=int, default=3,
+                    help="code distance (heavyhex: 3 or 33 = (3,3), 35, "
+                         "53; surface / color: 3, 5)")
     ap.add_argument("-n", "--noise", nargs="+", default=None)
     ap.add_argument("-p", "--rates", nargs="+", type=float, default=None)
     ap.add_argument("-e", "--error-types", nargs="+", default=None)
@@ -107,9 +108,6 @@ def parse_args():
     ap.add_argument("--device", default=None)
     ap.add_argument("--mwpm", action="store_true",
                     help="also evaluate the MWPM baseline on the val set")
-    ap.add_argument("--solution", action="store_true",
-                    help="use the reference model from solutions/ "
-                         "(not part of the distributed repo)")
     ap.add_argument("--smoke", action="store_true",
                     help="single config, 3 epochs, tiny batch count")
     ap.add_argument("--fresh", action="store_true",
@@ -177,7 +175,7 @@ def ensure_coupling_json(backend="ibm_yonsei"):
 
 
 def evaluate(model, loader, mod, aux_weight, pos_weight, device,
-             code="heavyhex", amp=False):
+             code="heavyhex", amp=False, distance=3):
     model.eval()
     q_logits, l_logits, y_qs, y_ls = [], [], [], []
     val_loss, nb, t_inf, n_inf = 0.0, 0, 0.0, 0
@@ -204,7 +202,8 @@ def evaluate(model, loader, mod, aux_weight, pos_weight, device,
         "ecr": ecr(q_logits, y_q),
         "acc": bit_accuracy(q_logits, y_q),
         "ler": ler_from_logits(l_logits, y_l),
-        "parity_ler": parity_ler_from_qubit_logits(q_logits, y_l, code),
+        "parity_ler": parity_ler_from_qubit_logits(q_logits, y_l, code,
+                                                   distance),
         "raw_ler": float(y_l.mean()),
         "inf_ms": (t_inf / max(n_inf, 1)) * 1000,
     }
@@ -222,15 +221,17 @@ def fmt_ratio(ratio):
 
 
 def train_one(args, mod, noise, p, et, device):
-    print(f"\n{'=' * 70}\n>>> {args.model}/{args.code} | {noise} | p={p} | "
-          f"{et} | cycles={args.cycles}")
+    dtag = distance_tag(args.code, args.distance)
+    print(f"\n{'=' * 70}\n>>> {args.model}/{args.code}/{dtag} | {noise} | "
+          f"p={p} | {et} | cycles={args.cycles}")
 
     # flat layout: results/train/CNN_heavyhex_d3_c3_p0.005_dp0.001_....csv
-    # ({MODEL}_{code}_d..., d = code distance, c = number of QEC cycles;
-    #  the error type is omitted since the grid is X-only).
+    # ({MODEL}_{code}_<dtag>..., dtag = dataset_generation.distance_tag,
+    #  c = number of QEC cycles; the error type is omitted since the grid
+    #  is X-only).
     # Paths come first so the early-stopped skip below can decide without
     # loading the (large) training split.
-    tag = f"{args.code}_d{DISTANCE}_c{args.cycles}_p{p}_{noise_tag(noise)}"
+    tag = f"{args.code}_{dtag}_c{args.cycles}_p{p}_{noise_tag(noise)}"
     if getattr(args, "run_name", ""):
         tag += f"_{args.run_name}"
     prefix = args.model.upper()
@@ -251,7 +252,7 @@ def train_one(args, mod, noise, p, et, device):
         from model.data import npz_path
         v = mwpm_ler_from_dataset(
             npz_path(args.data_dir, args.code, noise, "test",
-                     args.cycles, p, et))
+                     args.cycles, p, et, args.distance))
         print(f"    MWPM baseline LER (val data): {v:.4f}")
         return v
 
@@ -282,14 +283,14 @@ def train_one(args, mod, noise, p, et, device):
                                total, mwpm_baseline())
 
     Xtr, yqtr, yltr = load_split(args.data_dir, args.code, noise, "train",
-                                 args.cycles, p, et, device)
+                                 args.cycles, p, et, device, args.distance)
     Xva, yqva, ylva = load_split(args.data_dir, args.code, noise, "test",
-                                 args.cycles, p, et, device)
-    # model-specific input prep (e.g. the GNN appends the final-Z
-    # detector channel from the final bits — see model/graph.py)
+                                 args.cycles, p, et, device, args.distance)
+    # model-specific input prep (the final-Z detector channel computed
+    # from the final bits — see model/graph.py)
     if hasattr(mod, "prepare_features"):
-        Xtr = mod.prepare_features(Xtr, yqtr, args.code)
-        Xva = mod.prepare_features(Xva, yqva, args.code)
+        Xtr = mod.prepare_features(Xtr, yqtr, args.code, args.distance)
+        Xva = mod.prepare_features(Xva, yqva, args.code, args.distance)
     print(f"    train {tuple(Xtr.shape)}  val {tuple(Xva.shape)}  -> {device}")
 
     train_loader = FastTensorDataLoader(Xtr, yqtr, yltr,
@@ -297,11 +298,11 @@ def train_one(args, mod, noise, p, et, device):
     val_loader = FastTensorDataLoader(Xva, yqva, ylva,
                                       batch_size=args.batch_size)
 
-    spec = CODE_SPECS[args.code]
-    model_cls = get_model_class(args.model, args.solution)
+    spec = code_spec(args.code, args.distance)
+    model_cls = get_model_class(args.model)
     model = model_cls(in_channels=2 * args.cycles,
                       num_qubits=spec["num_qubits"],
-                      code=args.code).to(device)
+                      code=args.code, distance=args.distance).to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     pos_weight = None
@@ -370,7 +371,8 @@ def train_one(args, mod, noise, p, et, device):
             train_loss /= max(nb, 1)
 
             m = evaluate(model, val_loader, mod, args.aux_weight,
-                         pos_weight, device, args.code, amp=use_amp)
+                         pos_weight, device, args.code, amp=use_amp,
+                         distance=args.distance)
             ratio = mwpm_ratio(m["ler"], mwpm_ler)
             writer.writerow([epoch, f"{train_loss:.6f}",
                              f"{m['val_loss']:.6f}", f"{m['ecr']:.4f}",
@@ -456,7 +458,8 @@ def main():
     run_list = expand_config(args) if args.config else [args]
 
     ensure_coupling_json()
-    mod = get_model_module(args.model, args.solution)
+    require_implemented(args.code, args.distance)
+    mod = get_model_module(args.model)
     print(f"model module: {mod.__name__} | device: {device}"
           + (f" | sweep: {args.config} ({len(run_list)} runs)"
              if args.config else ""))
@@ -465,7 +468,7 @@ def main():
     for ra in run_list:
         # sweep entries may override the model per run ("model" key), so
         # resolve the module per entry (importlib caches repeats)
-        mod = get_model_module(ra.model, ra.solution)
+        mod = get_model_module(ra.model)
         noises = ra.noise or (ALL_NOISE if ra.all else [ALL_NOISE[0]])
         rates = ra.rates or (ERROR_RATES if (ra.all or not ra.smoke)
                              else [ERROR_RATES[0]])
@@ -482,9 +485,8 @@ def main():
                     except FileNotFoundError as e:
                         print(f"    skipped: {e}")
                     except NotImplementedError as e:
-                        print(f"\nERROR: the model is not implemented yet — "
-                              f"you need to fill in "
-                              f"model/{ra.model}_skeleton.py ({e})")
+                        print(f"\nERROR: model/{ra.model}.py is not "
+                              f"implemented yet ({e})")
                         sys.exit(1)
 
     if rows:

@@ -31,15 +31,17 @@ import pymatching
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
+from dataset_generation import (  # noqa: E402
+    CODES, distance_tag, require_implemented)
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     build_stim_circuit, detectors_from_tensor, detectors_from_dataset,
     noise_tag, is_qpu_profile, NOISE_PROFILES,
-    DISTANCE, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
+    ERROR_RATES, ERROR_TYPES, ALL_NOISE)
 from evaluation.metrics import ler  # noqa: E402
 
 
 def build_matching(num_cycles, error_type, p, noise_profile,
-                   code="heavyhex"):
+                   code="heavyhex", distance=3):
     """Matching decoder from the DEM of the noisy reference circuit.
 
     Plain 4-parameter profiles use the code's abstract circuit (25q
@@ -47,6 +49,7 @@ def build_matching(num_cycles, error_type, p, noise_profile,
     use the code's hardware-shaped circuit — detectors follow the same
     order either way, so the same detector reconstructions feed any of
     the Matching objects."""
+    require_implemented(code, distance)
     if code == "surface":
         if is_qpu_profile(noise_profile):
             from dataset_generation.rotatedSurface3_qpu_stim import (
@@ -82,14 +85,16 @@ def decode_ler(matching, detectors, true_logical):
 
 def mwpm_ler_from_dataset(npz_file, matching=None):
     """Evaluate MWPM LER on a saved dataset npz (any code; the npz's
-    "code" field selects the detector reconstruction, heavyhex when
-    absent — pre-code-axis files)."""
+    "code" / "distance" fields select the detector reconstruction,
+    heavyhex (3,3) when absent — files written before those axes)."""
     d = np.load(npz_file)
     code = str(d["code"]) if "code" in d.files else "heavyhex"
+    distance = int(d["distance"]) if "distance" in d.files else 3
+    require_implemented(code, distance)
     if matching is None:
         matching = build_matching(int(d["num_cycles"]), str(d["error_type"]),
                                   float(d["error_rate"]),
-                                  str(d["noise_profile"]), code)
+                                  str(d["noise_profile"]), code, distance)
     if code == "surface":
         from dataset_generation.rotatedSurface3_stim import detectors_from_tensor_rotatedSurface3
         det = detectors_from_tensor_rotatedSurface3(d["features"], d["labels"])
@@ -99,7 +104,7 @@ def mwpm_ler_from_dataset(npz_file, matching=None):
 
 
 def mwpm_ler_from_hardware(check_mat, dat, num_cycles, matching,
-                           code="heavyhex", return_pred=False):
+                           code="heavyhex", return_pred=False, distance=3):
     """Evaluate MWPM LER on hardware data.
 
     check_mat: (shots, N_CHECKS*C) check-value matrix (check_values()
@@ -108,6 +113,7 @@ def mwpm_ler_from_hardware(check_mat, dat, num_cycles, matching,
     return_pred=True also returns the per-shot predicted logical flips
     (for per-PUB spread statistics in hardware reports).
     """
+    require_implemented(code, distance)
     if code == "surface":
         from dataset_generation.rotatedSurface3_stim import (
             detectors_from_dataset_rotatedSurface3, logical_label_rotatedSurface3)
@@ -125,9 +131,11 @@ def main():
     ap.add_argument("-n", "--noise", nargs="+", default=ALL_NOISE)
     ap.add_argument("-p", "--rates", nargs="+", type=float, default=ERROR_RATES)
     ap.add_argument("-e", "--error-types", nargs="+", default=ERROR_TYPES)
-    ap.add_argument("--code", choices=["heavyhex", "surface"],
-                    default="heavyhex",
+    ap.add_argument("--code", choices=list(CODES), default="heavyhex",
                     help="code family (dataset/<code>/ subtree)")
+    ap.add_argument("--distance", type=int, default=3,
+                    help="code distance (heavyhex: 3 or 33 = (3,3), 35, "
+                         "53; surface / color: 3, 5)")
     ap.add_argument("--cycles", type=int, default=3)
     ap.add_argument("--split", default="test")
     ap.add_argument("--data-dir", default=str(_ROOT / "dataset"))
@@ -138,7 +146,8 @@ def main():
         for p in args.rates:
             for et in args.error_types:
                 f = (Path(args.data_dir) / args.code / noise_tag(noise) /
-                     f"{args.split}_d{DISTANCE}_c{args.cycles}_p{p}_{et}.npz")
+                     f"{args.split}_{distance_tag(args.code, args.distance)}"
+                     f"_c{args.cycles}_p{p}_{et}.npz")
                 if not f.exists():
                     print(f"{noise:<42} {p:>6} {et:>4}   (missing: {f.name})")
                     continue
