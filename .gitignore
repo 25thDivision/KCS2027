@@ -35,3 +35,11 @@ hardware/placement_*.json
 README_old.md
 # manuscript and abstract drafts (not for the public repo)
 PaperWork/
+
+# planning / orchestration / reports (local only)
+KCS_PORT_PLAN.md
+AGENTS.md
+KICKOFF_PROMPT.md
+agents/
+.claude/
+reports/

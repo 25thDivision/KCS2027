@@ -62,7 +62,7 @@
     }
   },
   "pipeline": {
-    "conda_env": "HHC",
+    "conda_env": "KCS2",
     "codes": [
       "heavyhex",
       "surface"

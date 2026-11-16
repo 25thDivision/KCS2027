@@ -50,7 +50,7 @@ print(" ".join(v) if isinstance(v, list) else v)
 PY
 }
 
-CONDA_ENV="$(pcfg conda_env HHC)"
+CONDA_ENV="$(pcfg conda_env KCS2)"
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
 

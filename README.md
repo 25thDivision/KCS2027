@@ -295,10 +295,15 @@ LER/MWPM ratio)를 세로로 이어 붙이면 MWPM 기준선 대비 CNN/GNN ×
 ## 2. 환경 설정
 
 ```bash
-conda create -n 환경이름 python=3.12 pip
-conda activate 환경이름
-pip install -r requirements.txt
+mamba env create -f environment.yml -p ~/.conda/envs/KCS2
+conda activate KCS2
+# GraphMamba 커널 (사전 빌드 휠 두 줄, environment.yml 머리말과 동일)
+pip install --no-deps https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.7.0/causal_conv1d-1.7.0+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+pip install --no-deps https://github.com/state-spaces/mamba/releases/download/v2.3.2.post1/mamba_ssm-2.3.2.post1+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+python -c "import torch, mamba_ssm, causal_conv1d; print(torch.__version__, torch.cuda.is_available())"
 ```
+
+- 의존성은 [environment.yml](environment.yml) 하나로 관리해 (requirements.txt는 없앴어). 환경 이름은 `KCS2`로 통일.
 
 - GPU는 CUDA GPU면 아무거나 괜찮고, 서버에는 GTX 2080 Ti 2장이 있어 (6. slurm 참고)
 - 만약 conda가 뭔지 모르겠으면 물어봐줘
