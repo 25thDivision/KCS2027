@@ -24,8 +24,9 @@
 | surface d=5 | 미구현 |
 | color d=3, d=5 | 미구현 |
 | MWPM 기준선 (heavyhex (3,3), surface d=3) | 동작 |
-| 모델 레지스트리 `cnn`, `gnn` | 인터페이스만 있고 본문 미구현 |
-| 나머지 모델 6종, 하이브리드, NVIDIA pre-decoder | 미구현 |
+| 모델 8종 (`cnn`, `gcn`, `gcnii`, `gat`, `appnp`, `gnn`, `graph_transformer`, `graph_mamba`) | 동작 |
+| 하이브리드 2종 (heavyhex (3,3), surface d=3) | 동작 |
+| NVIDIA pre-decoder (surface d=3) | 동작, 체크포인트는 따로 받아야 함 |
 - 미구현인 (코드, distance)를 지정하면 파일을 만들기 전에 `NotImplementedError`로 멈춘다. 구현된 조합 목록은 `dataset_generation.IMPLEMENTED`다.
 - `pipeline.sbatch`는 `config.json`의 `pipeline.distances`에 적힌 조합 중 구현된 것만 돌고 나머지는 건너뛴다고 출력한다.
 # 디렉터리 구조
@@ -34,7 +35,9 @@
 - `circuits/rotatedSurface/` rotated surface code d=3 회로와 하드웨어 임베딩
 - `circuits/placement.py` 캘리브레이션을 반영한 자동 배치
 - `dataset_generation/` Stim 회로 생성기, 데이터셋 생성(`make_dataset.py`), QPU 캘리브레이션 평균 프로파일(`make_qpu_avg_profile.py`), 설정 읽기와 코드·distance 축 정의(`__init__.py`)
-- `model/` 모델 레지스트리(`__init__.py`), 모델 파일(`cnn.py`, `gnn.py`), detector 그래프(`graph.py`), 데이터 로더(`data.py`)
+- `model/` 모델 레지스트리(`__init__.py`), 모델 파일 8개, 공용 손실과 그래프 기반 클래스(`common.py`), detector 그래프(`graph.py`), 데이터 로더(`data.py`)
+- `decoders/` 하이브리드 디코더(`hybrid.py`), NVIDIA pre-decoder 래퍼(`nvidia_predecoder.py`)
+- `docs/` NVIDIA 저장소 API 정리(`nvidia_api_notes.md`)
 - `baseline/mwpm.py` PyMatching 기반 MWPM 기준선
 - `evaluation/metrics.py` LER, ECR, parity_LER
 - `hardware/run_hw.py` QPU 제출, 수거, 분석

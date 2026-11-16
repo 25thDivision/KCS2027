@@ -256,12 +256,38 @@ def train_one(args, mod, noise, p, et, device):
         print(f"    MWPM baseline LER (val data): {v:.4f}")
         return v
 
+    def hybrid_lers():
+        """MWPM+ML / ML+MWPM LER of the best checkpoint on the val data
+        (decoders/hybrid.py). Runs with --mwpm, like the MWPM baseline."""
+        if not args.mwpm or not ckpt_path.exists():
+            return {}
+        from decoders.hybrid import hybrid_predictions
+        from evaluation.metrics import ler
+        feats, y_q, y_l = (t.cpu().numpy() for t in load_split(
+            args.data_dir, args.code, noise, "test", args.cycles, p, et,
+            "cpu", args.distance))
+        best_model = get_model_class(args.model)(
+            in_channels=2 * args.cycles,
+            num_qubits=code_spec(args.code, args.distance)["num_qubits"],
+            code=args.code, distance=args.distance)
+        best_model.load_state_dict(torch.load(
+            ckpt_path, map_location="cpu",
+            weights_only=False)["model_state_dict"])
+        hyb = hybrid_predictions(best_model.to(device), mod, feats, y_q,
+                                 args.code, args.distance)
+        out = {"mwpm_ml_ler": ler(hyb["mwpm_ml"], y_l),
+               "ml_mwpm_ler": ler(hyb["ml_mwpm"], y_l)}
+        print(f"    hybrid LER (val data): MWPM+ML {out['mwpm_ml_ler']:.4f}"
+              f" | ML+MWPM {out['ml_mwpm_ler']:.4f}")
+        return out
+
     def summary_row(best, raw_val, total, mwpm_ler):
         row = {"model": args.model, "noise": noise, "p": p, "type": et,
                **best, "raw_ler": raw_val, "total_epochs": total}
         if mwpm_ler is not None:
             row["mwpm_ler"] = mwpm_ler
         row["ler_mwpm_ratio"] = mwpm_ratio(best["ler"], mwpm_ler)
+        row.update(hybrid_lers())
         return row
 
     # ---- early-stopped skip ------------------------------------------
@@ -513,9 +539,23 @@ def main():
         widths = [max(len(label), 8) for _, label in cols]
         print(" | ".join(f"{label:>{w}}"
                          for (_, label), w in zip(cols, widths)))
+        def hybrid_row(r, label, key):
+            """Summary line of one hybrid: same config columns, the
+            hybrid's LER in the 'ler' column, model-only columns blank."""
+            h = {"model": label, "noise": r["noise"], "p": r["p"],
+                 "type": r["type"], "raw_ler": r["raw_ler"],
+                 "ler": r[key], "mwpm_ler": r.get("mwpm_ler"),
+                 "ler_mwpm_ratio": mwpm_ratio(r[key], r.get("mwpm_ler"))}
+            return " | ".join(f"{cell(h, k):>{w}}"
+                              for (k, _), w in zip(cols, widths))
+
         for r in rows:
             print(" | ".join(f"{cell(r, key):>{w}}"
                              for (key, _), w in zip(cols, widths)))
+            if "mwpm_ml_ler" in r:
+                prefix = model_prefix(r["model"])
+                print(hybrid_row(r, f"MWPM+{prefix}", "mwpm_ml_ler"))
+                print(hybrid_row(r, f"{prefix}+MWPM", "ml_mwpm_ler"))
 
 
 if __name__ == "__main__":

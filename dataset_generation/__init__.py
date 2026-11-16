@@ -25,7 +25,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = _ROOT / "config.json"
 CONFIG_SECTIONS = {"noise_profiles", "train", "dataset", "sweep", "cycles",
-                   "pipeline"}
+                   "pipeline", "nvidia"}
 
 
 # ---- code / distance axes ------------------------------------------------

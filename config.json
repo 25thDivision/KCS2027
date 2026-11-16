@@ -113,5 +113,8 @@
     "profile_runs": 5,
     "shots": 50000,
     "train_args": "--mwpm"
+  },
+  "nvidia": {
+    "checkpoint_accurate": "Ising-decoding/models/ising_decoder_surface_code_1_accurate_r13_v1.0.86_fp16.safetensors"
   }
 }

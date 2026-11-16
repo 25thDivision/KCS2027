@@ -617,6 +617,32 @@ def cmd_analyze(args):
     rows.append(("MWPM", mwpm_ler, std_over_pubs(pred=mwpm_pred),
                  None, None, None, None))
 
+    # NVIDIA pre-decoder + MWPM on the residual (surface only). The
+    # checkpoint path is config.json's nvidia.checkpoint_accurate,
+    # relative to the repo root.
+    if code == "surface":
+        from dataset_generation import load_config
+        nv_path = load_config().get("nvidia", {}).get("checkpoint_accurate")
+        nv_file = (_ROOT / nv_path) if nv_path else None
+        if nv_file is None or not nv_file.exists():
+            print(f"(NVIDIA pre-decoder checkpoint not found: "
+                  f"{nv_file or 'nvidia.checkpoint_accurate unset'}: "
+                  f"skipping)")
+        else:
+            import torch
+            from evaluation.metrics import ler
+            from decoders.nvidia_predecoder import (
+                load_predecoder, nvidia_mwpm_decode)
+            nv_model = load_predecoder(
+                nv_file, "cuda" if torch.cuda.is_available() else "cpu")
+            nv_pred = nvidia_mwpm_decode(nv_model, check_mat, dat, cycles,
+                                         matching, distance)
+            nv_ler = ler(nv_pred, y_logical)
+            rows.append(("NVIDIA(Accurate)", nv_ler,
+                         std_over_pubs(pred=nv_pred), None,
+                         nv_ler / mwpm_ler if mwpm_ler else None,
+                         None, None))
+
     # model head: a single --ckpt, or every matching checkpoint if none
     # was given. The architecture is INFERRED from the {MODEL}_ filename
     # prefix, so one analyze evaluates every architecture in the same
@@ -656,6 +682,8 @@ def cmd_analyze(args):
         import torch
         from model import get_model_module, get_model_class, code_spec
         from evaluation.metrics import ler, parity_ler_from_qubit_logits
+        from decoders.hybrid import FinalSyndromeMatcher, hybrid_predictions
+        hybrid_matcher = None
         base_tensor = tensor_fn(check_mat, cycles)
         prepared = {}       # model name -> model-ready input tensor
         for mname, ckpt_path in ckpts:
@@ -678,14 +706,17 @@ def cmd_analyze(args):
                                   code, distance)["num_qubits"],
                               code=code, distance=distance)
             model.load_state_dict(ckpt["model_state_dict"])
-            model.eval()
+            # GPU when there is one (GraphMamba's kernels are CUDA-only)
+            dev = "cuda" if torch.cuda.is_available() else "cpu"
+            model.to(dev).eval()
             preds, q_logits = [], []
             with torch.no_grad():
                 for i in range(0, shots, 8192):
-                    xb = torch.from_numpy(tensor[i:i + 8192])
+                    xb = torch.from_numpy(tensor[i:i + 8192]).to(dev)
                     ql, ll = model(xb)
-                    preds.append((ll.numpy().ravel() > 0).astype(np.uint8))
-                    q_logits.append(ql.numpy())
+                    preds.append((ll.float().cpu().numpy().ravel() > 0
+                                  ).astype(np.uint8))
+                    q_logits.append(ql.float().cpu().numpy())
             pred = np.concatenate(preds)
             model_ler = ler(pred, y_logical)
             parity_ler = parity_ler_from_qubit_logits(
@@ -698,6 +729,20 @@ def cmd_analyze(args):
                          model_ler,
                          std_over_pubs(pred=pred), parity_ler, ratio,
                          best_ep, total_ep))
+            # hybrids of this checkpoint with the final-syndrome MWPM
+            # (decoders/hybrid.py)
+            if hybrid_matcher is None:
+                hybrid_matcher = FinalSyndromeMatcher(code, distance)
+            hyb = hybrid_predictions(model, mod, base_tensor, dat, code,
+                                     distance, matcher=hybrid_matcher,
+                                     q_logits=np.concatenate(q_logits))
+            for label, key in ((f"MWPM+{model_prefix(mname)}", "mwpm_ml"),
+                               (f"{model_prefix(mname)}+MWPM", "ml_mwpm")):
+                h_ler = ler(hyb[key], y_logical)
+                rows.append((f"{label} ({ckpt_path.name})", h_ler,
+                             std_over_pubs(pred=hyb[key]), None,
+                             h_ler / mwpm_ler if mwpm_ler else None,
+                             best_ep, total_ep))
 
     def _fmt(v, spec=".4f"):
         return format(v, spec) if v is not None else "N/A"
