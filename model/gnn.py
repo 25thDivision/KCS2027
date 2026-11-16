@@ -67,13 +67,21 @@ class GNNDecoder(GraphDecoderBase):
                  code="heavyhex", distance=3,
                  hidden_dim=64, num_layers=4, fc_dim=128):
         super().__init__(in_channels, code, distance)
-        # TODO: build the layers described in the module docstring
-        raise NotImplementedError("GNNDecoder body is not implemented yet")
+        self.layers = nn.ModuleList(
+            [nn.Linear(IN_FEATS, hidden_dim)]
+            + [nn.Linear(hidden_dim, hidden_dim)
+               for _ in range(num_layers - 1)])
+        self.shared = nn.Sequential(
+            nn.Linear(self.num_nodes * hidden_dim, fc_dim), nn.ReLU())
+        self.head_qubit = nn.Linear(fc_dim, num_qubits)
+        self.head_logical = nn.Linear(fc_dim, 1)
 
     def forward(self, x):
         h = self.node_inputs(x)                          # (B, N, IN_FEATS)
-        # TODO: run the architecture -> (qubit_logits, logical_logits)
-        raise NotImplementedError("GNNDecoder body is not implemented yet")
+        for layer in self.layers:
+            h = F.relu(layer(self.adj @ h))
+        z = self.shared(h.flatten(1))
+        return self.head_qubit(z), self.head_logical(z)
 
 
 def compute_loss(qubit_logits, logical_logits, y_qubit, y_logical,

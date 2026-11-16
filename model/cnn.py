@@ -67,14 +67,26 @@ class CNNDecoder(nn.Module):
         super().__init__()
         from model import code_spec
         grid_h, grid_w = code_spec(code, distance)["grid"]
-        # TODO: build self.features, self.shared, self.head_qubit,
-        # self.head_logical as described in the module docstring
-        raise NotImplementedError("CNNDecoder body is not implemented yet")
+        blocks = []
+        channels = in_channels + 1                       # + final-Z plane
+        for _ in range(num_blocks):
+            blocks += [nn.Conv2d(channels, conv_channels, 3, padding=1),
+                       nn.BatchNorm2d(conv_channels),
+                       nn.ReLU()]
+            channels = conv_channels
+        self.features = nn.Sequential(*blocks)
+        self.shared = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(conv_channels * grid_h * grid_w, fc_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout))
+        self.head_qubit = nn.Linear(fc_dim, num_qubits)
+        self.head_logical = nn.Linear(fc_dim, 1)
 
     def forward(self, x):
         x = x.float()
-        # TODO: features -> shared -> (qubit_logits, logical_logits)
-        raise NotImplementedError("CNNDecoder body is not implemented yet")
+        z = self.shared(self.features(x))
+        return self.head_qubit(z), self.head_logical(z)
 
 
 def compute_loss(qubit_logits, logical_logits, y_qubit, y_logical,

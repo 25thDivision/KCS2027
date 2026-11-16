@@ -65,13 +65,19 @@ class APPNPDecoder(GraphDecoderBase):
                  code="heavyhex", distance=3,
                  hidden_dim=16, K=10, alpha=0.1):
         super().__init__(in_channels, code, distance)
-        # TODO: build the layers described in the module docstring
-        raise NotImplementedError("APPNPDecoder body is not implemented yet")
+        self.K = K
+        self.alpha = alpha
+        self.lin1 = nn.Linear(IN_FEATS, hidden_dim)
+        self.head_qubit = nn.Linear(self.num_nodes * hidden_dim, num_qubits)
+        self.head_logical = nn.Linear(self.num_nodes * hidden_dim, 1)
 
     def forward(self, x):
         h = self.node_inputs(x)                          # (B, N, IN_FEATS)
-        # TODO: run the architecture -> (qubit_logits, logical_logits)
-        raise NotImplementedError("APPNPDecoder body is not implemented yet")
+        z = h = F.relu(self.lin1(h))
+        for _ in range(self.K):
+            h = (1 - self.alpha) * (self.adj @ h) + self.alpha * z
+        out = h.flatten(1)                               # (B, N * hidden)
+        return self.head_qubit(out), self.head_logical(out)
 
 
 def compute_loss(qubit_logits, logical_logits, y_qubit, y_logical,

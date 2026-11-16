@@ -89,13 +89,29 @@ class GraphMambaDecoder(GraphDecoderBase):
         order = torch.sort(deg, descending=True, stable=True).indices
         self.register_buffer("order", order)
         self.register_buffer("inverse_order", torch.argsort(order))
-        # TODO: build the layers described in the module docstring
-        raise NotImplementedError("GraphMambaDecoder body is not implemented yet")
+        self.embedding = nn.Sequential(
+            nn.Linear(IN_FEATS, d_model), nn.LayerNorm(d_model))
+        self.layers = nn.ModuleList(
+            [Mamba(d_model=d_model, d_state=d_state, d_conv=d_conv,
+                   expand=expand) for _ in range(num_layers)])
+        self.norms = nn.ModuleList(
+            [nn.LayerNorm(d_model) for _ in range(num_layers)])
+        self.dropout = nn.Dropout(dropout)
+        self.shared = nn.Sequential(
+            nn.Linear(self.num_nodes * d_model, fc_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout))
+        self.head_qubit = nn.Linear(fc_dim, num_qubits)
+        self.head_logical = nn.Linear(fc_dim, 1)
 
     def forward(self, x):
         h = self.node_inputs(x)                          # (B, N, IN_FEATS)
-        # TODO: run the architecture -> (qubit_logits, logical_logits)
-        raise NotImplementedError("GraphMambaDecoder body is not implemented yet")
+        h = self.embedding(h[:, self.order])             # degree-sorted
+        for mamba, norm in zip(self.layers, self.norms):
+            h = norm(h + self.dropout(mamba(h)))
+        h = h[:, self.inverse_order]                     # original order
+        z = self.shared(h.flatten(1))
+        return self.head_qubit(z), self.head_logical(z)
 
 
 def compute_loss(qubit_logits, logical_logits, y_qubit, y_logical,

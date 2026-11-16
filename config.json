@@ -25,7 +25,28 @@
         "model": "cnn"
       },
       {
+        "model": "gcn"
+      },
+      {
+        "model": "gcnii"
+      },
+      {
+        "model": "gat"
+      },
+      {
+        "model": "appnp"
+      },
+      {
         "model": "gnn"
+      },
+      {
+        "model": "graph_transformer",
+        "batch_size": 1024,
+        "lr": 0.0001
+      },
+      {
+        "model": "graph_mamba",
+        "lr": 0.0001
       }
     ]
   },

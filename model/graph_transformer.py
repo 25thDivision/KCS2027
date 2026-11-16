@@ -68,6 +68,28 @@ def prepare_features(features, final_bits, code="heavyhex", distance=3):
     return augment_features(features, final_bits, code, distance)
 
 
+class GraphTransformerLayer(nn.Module):
+    """Post-norm transformer layer with a graph attention mask."""
+
+    def __init__(self, d_model, num_heads, dropout):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(d_model, num_heads,
+                                          dropout=dropout, batch_first=True)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, 4 * d_model),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(4 * d_model, d_model))
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, h, attn_mask):
+        a, _ = self.attn(h, h, h, attn_mask=attn_mask, need_weights=False)
+        h = self.norm1(h + self.dropout(a))
+        return self.norm2(h + self.dropout(self.ff(h)))
+
+
 class GraphTransformerDecoder(GraphDecoderBase):
     """in_channels = 2*num_cycles (same convention as the CNN)."""
 
@@ -79,13 +101,24 @@ class GraphTransformerDecoder(GraphDecoderBase):
         mask = torch.zeros(self.num_nodes, self.num_nodes)
         mask.masked_fill_(~self.adj_mask, float("-inf"))
         self.register_buffer("attn_mask", mask)
-        # TODO: build the layers described in the module docstring
-        raise NotImplementedError("GraphTransformerDecoder body is not implemented yet")
+        self.embedding = nn.Linear(IN_FEATS, d_model)
+        self.layers = nn.ModuleList(
+            [GraphTransformerLayer(d_model, num_heads, dropout)
+             for _ in range(num_layers)])
+        self.shared = nn.Sequential(
+            nn.Linear(self.num_nodes * d_model, 2 * d_model),
+            nn.ReLU(),
+            nn.Dropout(dropout))
+        self.head_qubit = nn.Linear(2 * d_model, num_qubits)
+        self.head_logical = nn.Linear(2 * d_model, 1)
 
     def forward(self, x):
         h = self.node_inputs(x)                          # (B, N, IN_FEATS)
-        # TODO: run the architecture -> (qubit_logits, logical_logits)
-        raise NotImplementedError("GraphTransformerDecoder body is not implemented yet")
+        h = self.embedding(h)
+        for layer in self.layers:
+            h = layer(h, self.attn_mask)
+        z = self.shared(h.flatten(1))
+        return self.head_qubit(z), self.head_logical(z)
 
 
 def compute_loss(qubit_logits, logical_logits, y_qubit, y_logical,
