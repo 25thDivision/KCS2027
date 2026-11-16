@@ -61,7 +61,7 @@ from dataset_generation import (  # noqa: E402
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     noise_tag, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
 from model import (  # noqa: E402
-    get_model_module, get_model_class, MODEL_NAMES, code_spec)
+    get_model_module, get_model_class, MODEL_NAMES, code_spec, model_prefix)
 from model.data import load_split, FastTensorDataLoader  # noqa: E402
 from evaluation.metrics import (  # noqa: E402
     ecr, bit_accuracy, ler_from_logits, parity_ler_from_qubit_logits)
@@ -234,7 +234,7 @@ def train_one(args, mod, noise, p, et, device):
     tag = f"{args.code}_{dtag}_c{args.cycles}_p{p}_{noise_tag(noise)}"
     if getattr(args, "run_name", ""):
         tag += f"_{args.run_name}"
-    prefix = args.model.upper()
+    prefix = model_prefix(args.model)
     result_dir = Path(args.outdir)
     ckpt_dir = Path(args.ckpt_dir)
     result_dir.mkdir(parents=True, exist_ok=True)

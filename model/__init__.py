@@ -15,9 +15,31 @@ from dataset_generation import normalize_distance
 # name -> (module path, decoder class name)
 MODEL_REGISTRY = {
     "cnn": ("model.cnn", "CNNDecoder"),
+    "gcn": ("model.gcn", "GCNDecoder"),
+    "gcnii": ("model.gcnii", "GCNIIDecoder"),
+    "gat": ("model.gat", "GATDecoder"),
+    "appnp": ("model.appnp", "APPNPDecoder"),
     "gnn": ("model.gnn", "GNNDecoder"),
+    "graph_transformer": ("model.graph_transformer",
+                          "GraphTransformerDecoder"),
+    "graph_mamba": ("model.graph_mamba", "GraphMambaDecoder"),
 }
-MODEL_NAMES = sorted(MODEL_REGISTRY)
+MODEL_NAMES = list(MODEL_REGISTRY)
+
+
+def model_prefix(model_name):
+    """Result / checkpoint file-name prefix of a model: the registry name
+    upper-cased without underscores (graph_mamba -> GRAPHMAMBA), so the
+    prefix is the part of the file name before the first underscore."""
+    return model_name.replace("_", "").upper()
+
+
+def model_from_prefix(prefix):
+    """Inverse of model_prefix; None for an unknown prefix."""
+    for name in MODEL_REGISTRY:
+        if model_prefix(name) == prefix.upper():
+            return name
+    return None
 
 # per-(code, distance) model-facing constants: number of per-qubit label
 # bits and the (H, W) of the syndrome tensor planes (None until the

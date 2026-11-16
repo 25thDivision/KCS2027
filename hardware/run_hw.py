@@ -623,11 +623,10 @@ def cmd_analyze(args):
     # report; --model narrows it to one. Checkpoints are matched on the
     # "_<code>_<dtag>_" part of their name; names without any code tag
     # are legacy heavyhex (3,3) checkpoints.
-    from model import MODEL_REGISTRY
+    from model import MODEL_REGISTRY, model_from_prefix, model_prefix
 
     def model_of(path):
-        prefix = path.name.split("_", 1)[0].lower()
-        return prefix if prefix in MODEL_REGISTRY else None
+        return model_from_prefix(path.name.split("_", 1)[0])
 
     if args.ckpt:
         p = Path(args.ckpt)
@@ -695,7 +694,8 @@ def cmd_analyze(args):
             # "weight from epoch <best> out of <total> trained"
             best_ep = ckpt.get("best_epoch", ckpt.get("epoch"))
             total_ep = ckpt.get("total_epochs")
-            rows.append((f"{mname.upper()} ({ckpt_path.name})", model_ler,
+            rows.append((f"{model_prefix(mname)} ({ckpt_path.name})",
+                         model_ler,
                          std_over_pubs(pred=pred), parity_ler, ratio,
                          best_ep, total_ep))
 
