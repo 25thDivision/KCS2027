@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=qec-pipeline
-#SBATCH --partition=main
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
@@ -32,6 +31,15 @@
 #   LOOPS=5 sbatch pipeline.sbatch      # 실전 5루프
 #   sbatch pipeline.sbatch              # 1회
 #   SMOKE=1 sbatch pipeline.sbatch      # 빠른 end-to-end 리허설
+# 파티션은 지정하지 않는다 (클러스터의 기본 파티션 사용).
+# Slurm 없이도 돈다: `bash pipeline.sbatch`. 이때 GPU는 환경변수로 고른다
+# (예: CUDA_VISIBLE_DEVICES=2 bash pipeline.sbatch). sbatch로 제출하면
+# --gres=gpu:1 이라 GPU 번호는 Slurm이 정한다.
+#
+# QPU 단계는 코드의 백엔드 이름 접두사로 provider를 고른다 (ibm_* / ionq_*,
+# hardware/providers). keys.json에 그 provider의 키가 없으면 그 코드의 제출만
+# 건너뛴다 (ibm: ibm_API + ibm_instance, ionq: ionq_api_key). 제출이 실패해도
+# (배치 불가 등) 경고만 남기고 다음 단계로 간다.
 #
 # 코드별 distance 목록(pipeline.distances) 중 회로·생성기가 저장소에 있는
 # (코드, distance)만 돌고 나머지는 건너뛴다(dataset_generation.IMPLEMENTED).
@@ -99,6 +107,20 @@ print(" ".join(str(x) for x in d.get(sys.argv[1], [3])))
 PY
 }
 
+has_keys() {      # 백엔드의 provider 키가 keys.json에 채워져 있으면 0
+    python3 - "$1" <<'PY'
+import json, os, sys
+need = {"ibm_": ("ibm_API", "ibm_instance"), "aer_": ("ibm_API", "ibm_instance"),
+        "ionq_": ("ionq_api_key",)}
+fields = next((v for k, v in need.items() if sys.argv[1].startswith(k)), None)
+if fields is None or not os.path.exists("keys.json"):
+    sys.exit(1)
+keys = json.load(open("keys.json"))
+ok = all(keys.get(f) and not str(keys[f]).startswith("YOUR_") for f in fields)
+sys.exit(0 if ok else 1)
+PY
+}
+
 implemented() {   # (코드, distance)의 회로·생성기가 저장소에 있으면 0
     python3 - "$1" "$2" <<'PY'
 import sys
@@ -140,7 +162,7 @@ for cd in "${COMBOS[@]}"; do
 done
 
 echo "=== [2/6] QPU 수거 (완료된 pending 잡 분석, 나머지 이월) ==="
-if [[ -f keys.json ]]; then
+if [[ -f keys.json ]]; then   # 잡별 provider 조회 실패는 collect가 이월 처리
     python hardware/run_hw.py collect || \
         echo "WARNING: collect 실패 — 이월하고 계속"
 else
@@ -148,29 +170,32 @@ else
 fi
 
 echo "=== [3/6] QPU 제출 (코드별 1잡 x ${QPU_PUBS} PUB, 완료는 다음 루프 수거) ==="
-if [[ -f keys.json ]]; then
-    for cd in "${COMBOS[@]}"; do
-        code="${cd%%:*}"; dist="${cd##*:}"
-        backend="$(backend_of "$code")"
-        echo "--- QPU submit: $code distance=$dist @ $backend ---"
-        python hardware/run_hw.py submit --backend "$backend" \
-            --code "$code" --distance "$dist" \
-            --shots "$SHOTS" --pubs "$QPU_PUBS" $HW_EXTRA
-    done
-else
-    echo "keys.json 없음 — QPU 제출 건너뜀"
-fi
+for cd in "${COMBOS[@]}"; do
+    code="${cd%%:*}"; dist="${cd##*:}"
+    backend="$(backend_of "$code")"
+    # IonQ dry-run은 키 없이도 된다 (회로와 큐빗 수만 확인)
+    if ! has_keys "$backend" && \
+       ! { [[ "$backend" == ionq_* ]] && [[ -n "$HW_EXTRA" ]]; }; then
+        echo "--- QPU submit: $code distance=$dist @ $backend — keys.json에 키 없음, 건너뜀 ---"
+        continue
+    fi
+    echo "--- QPU submit: $code distance=$dist @ $backend ---"
+    python hardware/run_hw.py submit --backend "$backend" \
+        --code "$code" --distance "$dist" \
+        --shots "$SHOTS" --pubs "$QPU_PUBS" $HW_EXTRA || \
+        echo "WARNING: $code distance=$dist 제출 실패 — 이번 루프는 건너뜀"
+done
 
 echo "=== [4/6] QPU 캘리브레이션 프로파일 (최근 ${PROFILE_RUNS}개 루프 평균) ==="
 declare -A PROFILE
 for cd in "${COMBOS[@]}"; do
-    code="${cd%%:*}"
+    code="${cd%%:*}"; dist="${cd##*:}"
     backend="$(backend_of "$code")"
     PROFILE[$cd]=""
     # 캘리브레이션 평균 프로파일은 IBM 백엔드 코드만 만든다
     [[ "$backend" == ibm_* ]] || continue
     if out=$(python dataset_generation/make_qpu_avg_profile.py \
-                 --code "$code" --backend "$backend" \
+                 --code "$code" --distance "$dist" --backend "$backend" \
                  --n-runs "$PROFILE_RUNS" --suffix "loop$LOOP" 2>&1); then
         echo "$out"
         PROFILE[$cd]=$(sed -n 's/^profile \(qpu\/[^:]*\):.*/\1/p' <<< "$out" | tail -1)
@@ -220,7 +245,11 @@ if (( LOOP < LOOPS )); then
     for a in "$@"; do
         [[ "$a" == "--continue-stopped" ]] || NEXT_ARGS+=("$a")
     done
-    if command -v sbatch >/dev/null 2>&1; then
+    if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+        # Slurm 밖에서 직접 실행 중: 같은 환경(GPU 지정 포함)으로 이어서 실행
+        export LOOP=$((LOOP + 1))
+        exec bash pipeline.sbatch ${NEXT_ARGS[@]+"${NEXT_ARGS[@]}"}
+    elif command -v sbatch >/dev/null 2>&1; then
         sbatch --export=ALL,LOOP=$((LOOP + 1)) pipeline.sbatch \
             ${NEXT_ARGS[@]+"${NEXT_ARGS[@]}"}
     else
