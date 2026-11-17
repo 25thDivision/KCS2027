@@ -38,7 +38,7 @@
 #
 # QPU 단계는 코드의 백엔드 이름 접두사로 provider를 고른다 (ibm_* / ionq_*,
 # hardware/providers). keys.json에 그 provider의 키가 없으면 그 코드의 제출만
-# 건너뛴다 (ibm: ibm_API + ibm_instance, ionq: ionq_api_key). 제출이 실패해도
+# 건너뛴다 (ibm: ibm_API + ibm_instance, ionq: IonQ_API). 제출이 실패해도
 # (배치 불가 등) 경고만 남기고 다음 단계로 간다.
 #
 # 코드별 distance 목록(pipeline.distances) 중 회로·생성기가 저장소에 있는
@@ -111,7 +111,7 @@ has_keys() {      # 백엔드의 provider 키가 keys.json에 채워져 있으�
     python3 - "$1" <<'PY'
 import json, os, sys
 need = {"ibm_": ("ibm_API", "ibm_instance"), "aer_": ("ibm_API", "ibm_instance"),
-        "ionq_": ("ionq_api_key",)}
+        "ionq_": ("IonQ_API",)}
 fields = next((v for k, v in need.items() if sys.argv[1].startswith(k)), None)
 if fields is None or not os.path.exists("keys.json"):
     sys.exit(1)

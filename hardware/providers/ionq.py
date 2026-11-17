@@ -32,7 +32,7 @@ OpenQASM 3 and only one per job. job.json records it as
 "mid_circuit": true. Whether a given backend accepts it is decided by
 IonQ at submission.
 
-Credentials: keys.json field ionq_api_key. --dry-run needs no key.
+Credentials: keys.json field IonQ_API. --dry-run needs no key.
 """
 import json
 import math
@@ -50,7 +50,7 @@ BACKENDS = {
     "ionq_forte1": ("qpu.forte-1", None),
     "ionq_sim_forte1": ("simulator", "forte-1"),
 }
-KEY_FIELD = "ionq_api_key"
+KEY_FIELD = "IonQ_API"
 
 
 def plan_jobs(shots, pubs, max_shots):

@@ -130,7 +130,7 @@ Stim 회로와 QPU 회로는 check-value 수준에서 비트 단위로 일치해
 # keys.json
 ---
 QPU 접근 정보는 저장소 루트의 `keys.json`에서만 읽는다. `keys.example.json`을 복사해 채운다. `keys.json`은 `.gitignore` 대상이다.
-- IBM은 `ibm_API`와 `ibm_instance`(CRN), IonQ는 `ionq_api_key`다.
+- IBM은 `ibm_API`와 `ibm_instance`(CRN), IonQ는 `IonQ_API`다.
 - 파이프라인은 코드마다 그 백엔드의 키가 있는지 보고, 없으면 그 코드의 QPU 제출만 건너뛴다.
 # Slurm
 ---
