@@ -74,8 +74,6 @@ Usage:
 import argparse
 import csv
 import json
-import pickle
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -85,245 +83,38 @@ import numpy as np
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from circuits.heavyhex.heavyhex_37q import (  # noqa: E402
-    ALL_PHYS, validate_backend, embedding_for)
 from circuits.heavyhex.heavyhex_depth7_opt_for_37q import (  # noqa: E402
-    HeavyHex37QDepthOpt, check_values, N_CHECKS)
-from circuits.heavyhex.fetch_coupling import fetch  # noqa: E402
-from circuits.heavyhex.dd_utils import apply_dd, dd_pulse_stats  # noqa: E402
+    check_values, N_CHECKS)
 from dataset_generation import (  # noqa: E402
     CODES, distance_tag, normalize_distance, require_implemented)
+from hardware.providers import get_provider  # noqa: E402
+from hardware.providers.base import (  # noqa: E402
+    RUNS_DIR, json_dump as _json_dump, load_raw)
 from model import MODEL_NAMES  # noqa: E402
 
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     check_matrix_from_dict, syndrome_tensor, logical_label, ALL_NOISE)
 
-RUNS_DIR = _ROOT / "hardware" / "runs"
 RESULTS_HW_DIR = _ROOT / "results" / "hardware"
 
 
-def load_keys():
-    path = _ROOT / "keys.json"
-    if not path.exists():
-        sys.exit(f"keys.json not found at {path}. "
-                 f"Copy keys.example.json to keys.json and fill it in.")
-    keys = json.load(open(path))
-    for k in ("ibm_API", "ibm_instance"):
-        if not keys.get(k) or keys[k].startswith("YOUR_"):
-            sys.exit(f"keys.json: '{k}' is not set.")
-    return keys
-
-
-def get_service(keys):
-    from qiskit_ibm_runtime import QiskitRuntimeService
-    return QiskitRuntimeService(token=keys["ibm_API"],
-                                instance=keys["ibm_instance"])
-
-
-def _json_dump(obj, path):
-    # default=str: calibration snapshots contain datetime objects
-    json.dump(obj, open(path, "w"), indent=2, default=str)
-
-
-def _local_versions():
-    import qiskit
-    import qiskit_ibm_runtime
-    return {"python": sys.version.split()[0],
-            "qiskit": qiskit.__version__,
-            "qiskit_ibm_runtime": qiskit_ibm_runtime.__version__}
-
-
-def snapshot_backend(backend, run_dir):
-    """Save everything the backend exposes about the QPU at this moment.
-
-    Best-effort: each item is saved independently so one missing API
-    doesn't lose the others."""
-    try:
-        props = backend.properties()
-        if props is not None:
-            _json_dump(props.to_dict(), run_dir / "properties.json")
-            print(f"   saved properties.json (calibration snapshot)")
-    except Exception as e:
-        print(f"   WARNING: could not save properties: {e}")
-    try:
-        _json_dump(backend.configuration().to_dict(),
-                   run_dir / "configuration.json")
-        print(f"   saved configuration.json")
-    except Exception as e:
-        print(f"   WARNING: could not save configuration: {e}")
-    try:
-        with open(run_dir / "target.pkl", "wb") as f:
-            pickle.dump(backend.target, f)
-        print(f"   saved target.pkl")
-    except Exception as e:
-        print(f"   WARNING: could not pickle target: {e}")
-
-
 def cmd_submit(args):
-    from qiskit import transpile, qpy
-    from qiskit_ibm_runtime import SamplerV2
-
+    """Submit through the backend's provider; register real jobs in
+    pending_jobs.json. Returns (provider, run folder, job ids)."""
     require_implemented(args.code, args.distance)
-    if args.code == "color":
-        sys.exit("--code color runs on IonQ; its submission path is not "
-                 "implemented yet (analyze --npz works).")
-    keys = load_keys()
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # 1) coupling map + backend handle, then 2) the code's hardware
-    #    circuit and its device placement
-    coupling_path = fetch(args.backend, token=keys["ibm_API"],
-                          instance=keys["ibm_instance"], outdir=str(RUNS_DIR))
-    service = get_service(keys)
-    backend = service.backend(args.backend)
-    placement_info = None
-    if args.code == "surface":
-        # surface도 캘리브레이션 인지 자동 배치 (heavyhex와 동일 정책:
-        # 체인 동안 고정, 임계값 위반 시 재탐색, --reselect-layout).
-        # 회로/clbit/logical 정의가 전부 패치-로컬 좌표라 어떤 동형
-        # 배치든 의미가 보존된다. 실패 시 정적 45도 임베딩 폴백.
-        from circuits.rotatedSurface.rotatedSurface import (
-            RotatedSurfaceHardware, surface_def, embedding_for_surface,
-            validate_backend_surface, required_edges_surface)
-        from circuits.placement import resolve_placement
-        s_dist = normalize_distance("surface", args.distance)
-        ALL_COORDS = surface_def(s_dist).ALL_COORDS
-        qc = RotatedSurfaceHardware(args.cycles, s_dist).build_circuit()
-        cm = json.load(open(coupling_path))
-        try:
-            static_map = embedding_for_surface(args.backend, s_dist)
-        except RuntimeError:
-            static_map = None
-        # the pinned-placement file is per (backend, code); d=3 keeps the
-        # plain "surface" key, other distances get their own
-        place_key = "surface" if s_dist == 3 else f"surface_d{s_dist}"
-        mapping, placement_info = resolve_placement(
-            args.backend, place_key, _ROOT / "hardware",
-            ALL_COORDS, required_edges_surface(s_dist), qc,
-            [tuple(e) for e in cm["coupling_map"]], backend.target,
-            static_mapping=static_map,
-            reselect=getattr(args, "reselect_layout", False))
-        if mapping is None:
-            print("WARNING: 유효한 자동 배치 없음 — 정적 45도 임베딩 폴백")
-            validate_backend_surface(coupling_path, distance=s_dist)
-            mapping = embedding_for_surface(args.backend, s_dist)
-            placement_info = {"fallback": "static",
-                              **(placement_info or {})}
-        else:
-            eset = {tuple(sorted(e)) for e in cm["coupling_map"]}
-            for u, v in required_edges_surface(s_dist):
-                assert tuple(sorted((mapping[u], mapping[v]))) in eset
-            print(f"backend '{args.backend}': rotatedSurface d={s_dist} "
-                  f"{len(ALL_COORDS)}q patch "
-                  f"placed (auto, qubits {min(mapping.values())}"
-                  f"–{max(mapping.values())})")
-        layout = [mapping[c] for c in ALL_COORDS]
-    else:
-        # heavyhex: 캘리브레이션 인지 자동 배치 (루프 체인 동안 고정 —
-        # hardware/placement_<backend>_heavyhex.json 재사용, 임계값 위반
-        # 시에만 재탐색; --reselect-layout으로 강제 재선택)
-        from circuits.placement import resolve_placement
-        from circuits.heavyhex.heavyhex_37q import required_edges
-        qc = HeavyHex37QDepthOpt(args.cycles).build_circuit()
-        cm = json.load(open(coupling_path))
-        try:
-            static_map = embedding_for(args.backend)
-        except RuntimeError:
-            static_map = None
-        mapping, placement_info = resolve_placement(
-            args.backend, "heavyhex", _ROOT / "hardware",
-            ALL_PHYS, required_edges(), qc,
-            [tuple(e) for e in cm["coupling_map"]], backend.target,
-            static_mapping=static_map,
-            reselect=getattr(args, "reselect_layout", False))
-        if mapping is None:
-            print("WARNING: 유효한 자동 배치 없음 — 정적 임베딩으로 폴백")
-            validate_backend(coupling_path)
-            mapping = embedding_for(args.backend)
-            placement_info = {"fallback": "static",
-                              **(placement_info or {})}
-        else:
-            # 선택된 배치가 required edges를 실제로 덮는지 이중 확인
-            eset = {tuple(sorted(e)) for e in cm["coupling_map"]}
-            for u, v in required_edges():
-                assert tuple(sorted((mapping[u], mapping[v]))) in eset
-            print(f"backend '{args.backend}': 37q patch placed "
-                  f"(auto, qubits {min(mapping.values())}"
-                  f"–{max(mapping.values())})")
-        layout = [mapping[p] for p in ALL_PHYS]
-
-    # 3) transpile with the fixed physical layout (patch labels mapped to
-    #    this backend's device qubits), then insert DD
-    tqc = transpile(qc, backend=backend, initial_layout=layout,
-                    optimization_level=1)
-    tqc = apply_dd(tqc, backend.target, sequence=args.dd)
-    print(f"transpiled+DD({args.dd}): depth={tqc.depth()}, "
-          f"pulses={dd_pulse_stats(tqc)}")
-
-    # 4) submit (unless rehearsing) as ONE job carrying --pubs PUBs of
-    #    the same ISA circuit. PUB = Primitive Unified Bloc, the
-    #    (circuit, parameter values, shots) execution unit of the V2
-    #    primitives — packing N PUBs into one job claims a SINGLE queue
-    #    entry for N x shots total. Backend limits (max_shots per PUB,
-    #    max_experiments per job) are queried and the plan auto-splits;
-    #    if the lookup fails we submit as requested with a warning.
-    #    The run folder is named <backend>_<timestamp> (job ids live in
-    #    job.json — analyze/collect find the folder by scanning job.json,
-    #    so legacy job-id-named folders keep working too).
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    jobs = []
-    if args.dry_run:
-        run_dir = RUNS_DIR / f"{args.backend}_{ts}_dryrun"
-        shots_per_pub, per_job = args.shots, [args.pubs]
-        print(f"--dry-run: not submitting (PUB plan: {args.pubs} PUB x "
-              f"{args.shots} shots in 1 job; snapshot is still saved).")
-    else:
-        max_shots = max_exp = None
-        try:
-            cfg_b = backend.configuration()
-            max_shots = getattr(cfg_b, "max_shots", None)
-            max_exp = getattr(cfg_b, "max_experiments", None)
-        except Exception as e:
-            print(f"WARNING: backend.configuration() lookup failed ({e}) "
-                  f"— submitting without limit checks")
-        shots_per_pub, per_job = _plan_pubs(args.shots, args.pubs,
-                                            max_shots, max_exp)
-        if shots_per_pub != args.shots or len(per_job) > 1:
-            print(f"backend limits (max_shots={max_shots}, "
-                  f"max_experiments={max_exp}) -> {shots_per_pub} "
-                  f"shots/PUB, PUBs per job: {per_job}")
-        sampler = SamplerV2(mode=backend)
-        for n in per_job:
-            jobs.append(sampler.run([tqc] * n, shots=shots_per_pub))
-        run_dir = RUNS_DIR / f"{args.backend}_{ts}"
-    while run_dir.exists():                  # same-second collision guard
-        run_dir = run_dir.with_name(run_dir.name + "b")
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    shutil.move(coupling_path, run_dir / "coupling.json")
-    snapshot_backend(backend, run_dir)
-    with open(run_dir / "circuit.qpy", "wb") as f:
-        qpy.dump(tqc, f)
-    print("   saved circuit.qpy (exact ISA circuit incl. DD delays)")
-
-    job_ids = [j.job_id() for j in jobs]
-    meta = {"job_id": job_ids[0] if job_ids else None,
-            "job_ids": job_ids,
-            "n_pubs": sum(per_job), "shots_per_pub": shots_per_pub,
-            "backend": args.backend, "code": args.code,
-            "distance": normalize_distance(args.code, args.distance),
-            "cycles": args.cycles,
-            "shots": args.shots, "pubs": args.pubs, "dd": args.dd,
-            "initial_layout": layout,
-            "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "dry_run": args.dry_run,
-            "transpiled_depth": tqc.depth(),
-            "transpiled_ops": {k: int(v) for k, v in tqc.count_ops().items()},
-            "placement": placement_info,
-            "versions": _local_versions()}
-    _json_dump(meta, run_dir / "job.json")
-    print(f"run folder: {run_dir}")
-    if jobs:
+    provider = get_provider(args.backend)
+    options = {}
+    if provider.name in ("ibm", "aer"):
+        options = dict(reselect_layout=getattr(args, "reselect_layout",
+                                               False))
+    if provider.name == "ibm":
+        options["dd"] = args.dd
+    run_dir = provider.submit(args.code, args.distance, args.cycles,
+                              args.shots, args.pubs, dry_run=args.dry_run,
+                              **options)
+    meta = json.load(open(run_dir / "job.json"))
+    job_ids = meta.get("job_ids") or []
+    if job_ids:
         pend = _load_pending()
         pend.append({"job_id": job_ids[0], "job_ids": job_ids,
                      "backend": args.backend, "code": args.code,
@@ -331,31 +122,13 @@ def cmd_submit(args):
                      "run_dir": run_dir.name,
                      "submitted_at": meta["submitted_at"]})
         _save_pending(pend)
-        print(f"submitted: {len(jobs)} job(s) {job_ids} — "
-              f"{sum(per_job)} PUB x {shots_per_pub} shots, registered in "
-              f"pending_jobs.json (다음 루프의 수거 단계가 자동 분석)")
+        print(f"submitted: {len(job_ids)} job(s) {job_ids} — "
+              f"{meta.get('n_pubs')} PUB x {meta.get('shots_per_pub')} "
+              f"shots, registered in pending_jobs.json (다음 루프의 수거 "
+              f"단계가 자동 분석)")
         print(f"manual: python hardware/run_hw.py analyze "
               f"--job-id {job_ids[0]}")
-    return jobs
-
-
-def wait_for_job(job, poll=30):
-    """Poll until the job reaches a final state, printing state changes.
-    Returns on DONE; exits on ERROR/CANCELLED."""
-    last = None
-    while True:
-        status = job.status()
-        name = getattr(status, "name", status)  # enum (old) or str (new)
-        if name != last:
-            print(f"[{time.strftime('%H:%M:%S')}] "
-                  f"job {job.job_id()}: {name}")
-            last = name
-        if name == "DONE":
-            return
-        if name in ("ERROR", "CANCELLED"):
-            sys.exit(f"job {job.job_id()} ended as {name} — "
-                     f"nothing to analyze.")
-        time.sleep(poll)
+    return provider, run_dir, job_ids
 
 
 def find_run_dir(job_id):
@@ -409,27 +182,6 @@ def _remove_pending(job_id):
         _save_pending(kept)
 
 
-def _plan_pubs(shots, pubs, max_shots, max_experiments):
-    """Backend-limit-aware PUB plan -> (shots per PUB, PUBs per job).
-
-    Keeps the total ~ shots*pubs: a PUB whose shots exceed max_shots is
-    subdivided; when the PUB count exceeds max_experiments the job is
-    split (list entry = one job's PUB count)."""
-    import math
-    shots_per_pub, n_pubs = shots, pubs
-    if max_shots and shots_per_pub > max_shots:
-        k = math.ceil(shots_per_pub / max_shots)
-        shots_per_pub = math.ceil(shots / k)
-        n_pubs = pubs * k
-    per_job, remaining = [], n_pubs
-    cap = max_experiments if max_experiments else n_pubs
-    while remaining > 0:
-        n = min(remaining, cap)
-        per_job.append(n)
-        remaining -= n
-    return shots_per_pub, per_job
-
-
 def _latest_qpu_profile(backend, code, distance=3):
     """Newest registered qpu/<backend>_<code>_* profile name of the same
     distance (or None) — the collect path uses it for the MWPM DEM
@@ -450,98 +202,29 @@ def _latest_qpu_profile(backend, code, distance=3):
 def fetch_raw(args):
     """Return (syn, dat, cycles, pub_shots): raw bits in clbit order.
 
-    Multi-PUB / multi-job aware: PUB results are concatenated in order
-    and pub_shots records each PUB's shot count. Legacy caches / loose
-    npz without pub_shots count as a single PUB (pub_shots=None).
-    On first collection this also records run_started_at (job metrics
-    "running" timestamp) into job.json and saves the calibration AS OF
-    execution time to properties_run.json."""
+    --npz or a cached raw.npz of the run folder is read directly;
+    otherwise the run's provider collects the results (waiting for the
+    jobs if needed) and writes raw.npz first. Legacy caches / loose npz
+    without pub_shots count as a single PUB (pub_shots=None)."""
     if args.npz:
-        d = np.load(args.npz)
-        ps = d["pub_shots"] if "pub_shots" in d.files else None
-        return (d["syn"].astype(np.uint8), d["dat"].astype(np.uint8),
-                int(d["cycles"]), ps)
+        return load_raw(args.npz)
 
     # legacy fallback name if the job has no local run folder yet
     run_dir = find_run_dir(args.job_id) or (RUNS_DIR / args.job_id)
     cached = run_dir / "raw.npz"
     if cached.exists():
-        d = np.load(cached)
-        ps = d["pub_shots"] if "pub_shots" in d.files else None
-        return (d["syn"].astype(np.uint8), d["dat"].astype(np.uint8),
-                int(d["cycles"]), ps)
+        return load_raw(cached)
 
-    keys = load_keys()
-    service = get_service(keys)
-    cycles = args.cycles
-    meta, job_ids = {}, [args.job_id]
+    backend = None
     meta_path = run_dir / "job.json"
     if meta_path.exists():
-        meta = json.load(open(meta_path))
-        cycles = meta.get("cycles", cycles)
-        job_ids = meta.get("job_ids") or [meta.get("job_id") or args.job_id]
-
-    syns, dats, pub_shots, metrics_all = [], [], [], []
-    first_running = None
-    for jid in job_ids:
-        job = service.job(jid)
-        wait_for_job(job, poll=getattr(args, "poll", 30))
-        # order='little' -> column i is clbit i, i.e. syn bit cyc*16+j and
-        # dat bit i in DATA_PHYS order — exactly the check_values() layout
-        for res in job.result():
-            s = res.data["syn"].to_bool_array(order="little").astype(np.uint8)
-            t = res.data["data"].to_bool_array(order="little").astype(np.uint8)
-            syns.append(s)
-            dats.append(t)
-            pub_shots.append(s.shape[0])
-        try:
-            mt = job.metrics()
-            metrics_all.append(mt)
-            r = (mt.get("timestamps") or {}).get("running")
-            if r and (first_running is None or r < first_running):
-                first_running = r
-        except Exception as e:
-            print(f"WARNING: could not read metrics of {jid}: {e}")
-    syn = np.concatenate(syns)
-    dat = np.concatenate(dats)
-    pub_arr = np.asarray(pub_shots, dtype=np.int64)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(run_dir / "raw.npz", syn=syn, dat=dat,
-                        cycles=cycles, pub_shots=pub_arr)
-    print(f"saved raw results -> {run_dir / 'raw.npz'} "
-          f"({len(pub_shots)} PUB x ~{pub_shots[0] if pub_shots else 0} shots)")
-    try:
-        _json_dump({"metrics": metrics_all}, run_dir / "job_metrics.json")
-        print(f"saved job_metrics.json")
-    except Exception as e:
-        print(f"WARNING: could not save job metrics: {e}")
-
-    # execution-time calibration snapshot (submission-time snapshots can
-    # be hours older than the actual run when the queue is long)
-    try:
-        import datetime as _dt
-        if first_running:
-            run_ts = first_running
-            run_dt = _dt.datetime.fromisoformat(run_ts.replace("Z", "+00:00"))
-        else:
-            run_ts = time.strftime("%Y-%m-%dT%H:%M:%S")
-            run_dt = None
-            print("WARNING: no 'running' timestamp in job metrics — "
-                  "using collection time; properties_run falls back to "
-                  "current calibration")
-        if meta:
-            meta["run_started_at"] = run_ts
-            _json_dump(meta, meta_path)
-        if meta.get("backend"):
-            bk = service.backend(meta["backend"])
-            props = (bk.properties(datetime=run_dt) if run_dt
-                     else bk.properties())
-            if props is not None:
-                _json_dump(props.to_dict(), run_dir / "properties_run.json")
-                print("saved properties_run.json (calibration at run time)")
-    except Exception as e:
-        print(f"WARNING: run-time calibration snapshot failed: {e}")
-    return syn, dat, cycles, pub_arr
+        backend = json.load(open(meta_path)).get("backend")
+    # runs without a job.json predate the provider split: IBM
+    provider = get_provider(backend or "ibm_legacy")
+    raw_path = provider.collect(run_dir, job_ids=[args.job_id],
+                                cycles=args.cycles,
+                                poll=getattr(args, "poll", 30))
+    return load_raw(raw_path)
 
 
 def cmd_analyze(args):
@@ -828,20 +511,12 @@ def cmd_collect(args):
     if not pending:
         print("pending 없음")
         return
-    try:
-        service = get_service(load_keys())
-    except (Exception, SystemExit) as e:
-        print(f"WARNING: 서비스 연결 불가({e}) — 수거 보류")
-        return
     keep = []
     for ent in pending:
         jids = ent.get("job_ids") or [ent.get("job_id")]
         label = f"{ent.get('backend')}/{ent.get('code')} {jids}"
         try:
-            names = []
-            for jid in jids:
-                st = service.job(jid).status()
-                names.append(getattr(st, "name", st))
+            names = get_provider(ent.get("backend")).status(jids)
         except (Exception, SystemExit) as e:
             print(f"  {label}: 상태 조회 실패({e}) — 이월")
             keep.append(ent)
@@ -880,20 +555,23 @@ def cmd_collect(args):
 
 
 def cmd_all(args):
-    jobs = cmd_submit(args)
+    provider, run_dir, job_ids = cmd_submit(args)
     if args.dry_run:
         print("--dry-run: skipping wait/analyze.")
         return
-    args.job_id = jobs[0].job_id()
-    args.npz = None
-    for j in jobs:
-        wait_for_job(j, poll=args.poll)
+    if job_ids:
+        args.job_id, args.npz = job_ids[0], None
+        provider.wait(job_ids, poll=args.poll)
+    else:              # a local provider wrote raw.npz during submit
+        args.job_id, args.npz = None, str(run_dir / "raw.npz")
     cmd_analyze(args)
 
 
 def _submit_opts(p):
     p.add_argument("--backend", default="ibm_yonsei",
-                   help="ibm_yonsei (default) or ibm_boston")
+                   help="backend name; its prefix picks the provider "
+                        "(ibm_* IBM QPU, ionq_* IonQ, aer_<ibm backend> "
+                        "Aer simulation with that backend's calibration)")
     p.add_argument("--code", choices=list(CODES), default="heavyhex",
                    help="code family")
     p.add_argument("--distance", type=int, default=3,
