@@ -57,7 +57,7 @@ sys.path.insert(0, str(_ROOT))
 
 from dataset_generation import (  # noqa: E402
     load_options, has_sweep, CONFIG_PATH, CODES, distance_tag,
-    require_implemented)
+    normalize_distance, require_implemented)
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     noise_tag, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
 from model import (  # noqa: E402
@@ -288,7 +288,39 @@ def train_one(args, mod, noise, p, et, device):
             row["mwpm_ler"] = mwpm_ler
         row["ler_mwpm_ratio"] = mwpm_ratio(best["ler"], mwpm_ler)
         row.update(hybrid_lers())
+        write_summary(row)
         return row
+
+    def write_summary(row):
+        """results/train/summary/<MODEL>_<tag>.csv: one line per decoder
+        of this config (the model's head-LER at its best epoch, raw,
+        MWPM and the two hybrids when --mwpm) - the input of
+        analysis/gather_results.py."""
+        from model.data import npz_path
+        try:
+            n_shots = int(np.load(npz_path(
+                args.data_dir, args.code, noise, "test", args.cycles, p,
+                et, args.distance))["logical_labels"].shape[0])
+        except Exception:
+            n_shots = ""
+        lines = [(prefix, row["ler"]), ("raw", row["raw_ler"])]
+        if row.get("mwpm_ler") is not None:
+            lines.append(("MWPM", row["mwpm_ler"]))
+        if "mwpm_ml_ler" in row:
+            lines.append((f"MWPM+{prefix}", row["mwpm_ml_ler"]))
+            lines.append((f"{prefix}+MWPM", row["ml_mwpm_ler"]))
+        sdir = result_dir / "summary"
+        sdir.mkdir(parents=True, exist_ok=True)
+        with open(sdir / f"{prefix}_{tag}.csv", "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["decoder", "ler", "model", "code", "distance",
+                        "cycles", "noise_profile", "p", "error_type",
+                        "n_shots", "best_epoch", "total_epochs"])
+            for decoder, value in lines:
+                w.writerow([decoder, f"{value:.6f}", args.model, args.code,
+                            normalize_distance(args.code, args.distance),
+                            args.cycles, noise, p, et, n_shots,
+                            row["epoch"], row["total_epochs"]])
 
     # ---- early-stopped skip ------------------------------------------
     # A config whose previous session ended in early stopping is done:

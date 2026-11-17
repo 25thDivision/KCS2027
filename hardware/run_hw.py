@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """
-Hardware validation on IBM Quantum backends
-===========================================
-Pipeline (submit):
+Hardware validation: submit, collect, analyze
+=============================================
+The backend name picks a provider (hardware/providers): ibm_* an IBM QPU
+(heavyhex, surface), ionq_* IonQ (color), aer_<ibm backend> a local Aer
+simulation with that backend's calibration. Every provider leaves the
+same run folder (job.json + raw.npz), which is all analyze reads. The
+submit pipeline below is the IBM provider's (hardware/providers/ibm.py).
+
+Pipeline (submit, IBM):
   keys.json -> fetch_coupling.fetch() -> validate_backend()
     -> HeavyHex37QDepthOpt circuit -> transpile(initial_layout =
     ALL_PHYS mapped through embedding_for(backend), optimization_level=1)
@@ -486,14 +492,15 @@ def cmd_analyze(args):
         w.writerow(["decoder", "ler", "ler_std_over_pubs",
                     "parity_LER (diagnostic)", "LER/MWPM ratio", "shots",
                     "cycles", "best_epoch", "total_epochs", "backend",
-                    "timestamp", "job_id"])
+                    "timestamp", "job_id", "code", "distance"])
         for name, v, sd, pl, ratio, be, te in rows:
             w.writerow([name, f"{v:.6f}", _fmt(sd, ".6f"),
                         _fmt(pl, ".6f"), _fmt(ratio, ".6f"), shots, cycles,
                         be if be is not None else "",
                         te if te is not None else "",
                         hw_backend or "unknown", submitted_at or ts,
-                        job_id or ""])
+                        job_id or "", code,
+                        normalize_distance(code, distance)])
     print(f"saved -> {csv_path}")
     if args.job_id:
         _remove_pending(args.job_id)

@@ -4,7 +4,8 @@
 - 공식 지표는 head-LER이다. 디코더의 logical head가 낸 logical Z flip 예측과 실제 flip이 다른 비율이고, 시뮬레이션과 실기기 양쪽에서 계산한다.
 - ECR(시뮬레이션 전용)과 parity_LER은 진단용으로만 함께 기록한다.
 - 디코더 목표 구성은 ML 디코더 8종(CNN, GCN, GCNII, GAT, APPNP, GNN, GraphTransformer, GraphMamba), MWPM, 하이브리드 2종(MWPM+ML, ML+MWPM), NVIDIA pre-decoder(surface 한정)다.
-- 이 저장소는 Heavy-hex_Surface_Code 저장소를 바탕으로 KCS 저장소의 벤치마크 구조를 옮겨 오는 중이다. 아래 "현재 구현 상태"가 지금 실제로 동작하는 범위다.
+- 이 저장소는 Heavy-hex_Surface_Code 저장소를 바탕으로 KCS 저장소의 벤치마크 구조를 옮겨 온 것이다. 아래 "현재 구현 상태"가 지금 실제로 동작하는 범위다.
+- KCS 저장소의 기존 결과(QCE26)는 18큐빗 heavy-hex 회로와 ECR 지표 기준이다. 이 저장소는 37큐빗 heavy-hex 회로와 head-LER 기준이라 두 결과를 직접 비교하지 않는다.
 # 코드와 플랫폼
 ---
 | 코드 | `--code` | `--distance` | 플랫폼 | 기본 백엔드 |
@@ -22,7 +23,9 @@
 | surface d=3, d=5 회로, 데이터셋, 게이트, 하드웨어 경로 | 동작 |
 | heavyhex (3,5), (5,3) | 미구현 |
 | color d=3, d=5 회로, 데이터셋, 게이트 | 동작 |
-| color 하드웨어 제출 (IonQ) | 미구현 |
+| color 하드웨어 경로 (IonQ provider) | dry-run까지 확인, 실제 제출은 IonQ 키 필요 |
+| Aer 캘리브레이션 실행 (heavyhex (3,3), surface d=3) | 동작 |
+| 결과 집계, Spearman 분석, 그림 | 동작 |
 | MWPM 기준선 (heavyhex (3,3), surface d=3, d=5) | 동작 |
 | color 기준선 (restriction 디코더, d=3, d=5) | 동작 |
 | 모델 8종 (`cnn`, `gcn`, `gcnii`, `gat`, `appnp`, `gnn`, `graph_transformer`, `graph_mamba`) | 동작 |
@@ -42,7 +45,8 @@
 - `docs/` NVIDIA 저장소 API 정리(`nvidia_api_notes.md`)
 - `baseline/mwpm.py` PyMatching 기반 MWPM 기준선, `baseline/mwpm_color.py` color code용 restriction 디코더
 - `evaluation/metrics.py` LER, ECR, parity_LER
-- `hardware/run_hw.py` QPU 제출, 수거, 분석
+- `hardware/run_hw.py` QPU 제출, 수거, 분석. `hardware/providers/`가 백엔드별 실행 경로(IBM, IonQ, Aer 캘리브레이션)를 맡는다
+- `analysis/` 결과 집계(`gather_results.py`), 시뮬레이션과 하드웨어의 순위 상관(`spearman.py`), 그림(`plot.py`)
 - `verification/` 규약 게이트 스크립트
 - `tests/` pytest 테스트
 - `train.py` 학습 진입점
@@ -79,14 +83,23 @@ python train.py --model cnn --smoke
 python train.py --code surface --model gnn
 # 3) MWPM 기준선만 따로
 python baseline/mwpm.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.005
-# 4) 하드웨어 (keys.json 필요)
+# 4) 하드웨어 (keys.json 필요). 백엔드 이름 접두사가 실행 경로를 고른다
 python hardware/run_hw.py submit --backend ibm_pittsburgh --code heavyhex --dry-run
+python hardware/run_hw.py submit --backend ionq_forte1 --code color --dry-run
+python hardware/run_hw.py all --backend aer_ibm_pittsburgh --code heavyhex   # 로컬 Aer, QPU 제출 없음
 python hardware/run_hw.py collect
 python hardware/run_hw.py analyze --job-id <ID>
+# 5) 결과 집계와 분석
+python analysis/gather_results.py     # results/gathered.csv
+python analysis/spearman.py           # results/spearman.csv
+python analysis/plot.py               # results/figures/
 # 테스트
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/
 ```
 - `submit`에 `--dry-run`을 붙이면 제출 직전까지만 수행한다. 빼면 실제 QPU 잡이 제출된다.
+- 백엔드 이름이 `ibm_`로 시작하면 IBM QPU(heavyhex, surface), `ionq_`로 시작하면 IonQ(color, `ionq_forte1`과 클라우드 시뮬레이터 `ionq_sim_forte1`), `aer_ibm_<이름>`이면 그 IBM 장비의 현재 캘리브레이션으로 로컬 Aer 시뮬레이션을 한다.
+- Aer 캘리브레이션 실행은 heavyhex (3,3)과 surface d=3만 받는다. surface는 열 완화까지 포함한 노이즈 모델을 쓰고, heavyhex는 37큐빗이라 stabilizer 방식으로 돌리며 열 완화를 뺀다 (`job.json`의 `noise`에 기록).
+- color의 하드웨어 회로는 d=3이 check마다 새 ancilla(3 cycle 25큐빗), d=5가 ancilla 2개 재사용(21큐빗, 중간 측정과 reset 필요)이다.
 - `analyze`는 raw LER, MWPM, 그리고 `checkpoint/`에서 코드와 distance가 맞는 모든 체크포인트를 한 표로 낸다.
 # config.json
 ---
@@ -94,26 +107,31 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/
 - `train`, `dataset`, 최상위 `cycles` 학습 하이퍼파라미터와 데이터셋 샘플 수의 기본값이다. `cycles`는 양쪽이 함께 쓴다.
 - `sweep` 스윕 정의다. `runs`의 각 항목이 (모델, 노이즈, p, 하이퍼파라미터 덮어쓰기) 한 벌이고, 섹션이 있으면 `make_dataset.py`와 `train.py`가 자동으로 따른다. `--config none`으로 끈다.
 - `pipeline` 파이프라인 고정 설정이다. `conda_env`, `codes`, `distances`(코드별 distance 목록), `backends`(코드별 백엔드), `qpu_pubs`, `profile_runs`, `shots`, `train_args`가 있다.
+- `nvidia` NVIDIA pre-decoder 체크포인트 경로(`checkpoint_accurate`, 저장소 루트 기준)다. 파일이 없으면 분석에서 그 행만 빠진다. 받는 방법은 `docs/nvidia_api_notes.md`에 있다.
 - 우선순위는 `config.json` 기본값, CLI 인자, 스윕 run 항목 순으로 뒤가 이긴다.
 # 결과 위치
 ---
 - 데이터셋 `dataset/<code>/<노이즈태그>/{train,test}_<dtag>_c<cycles>_p<p>_X.npz`
 - 학습 로그 `results/train/{MODEL}_<code>_<dtag>_c<cycles>_p<p>_<노이즈태그>.csv`
+- 학습 요약 `results/train/summary/{MODEL}_<code>_<dtag>_c<cycles>_p<p>_<노이즈태그>.csv` (모델의 best head-LER, raw, MWPM, 하이브리드 2종)
 - 체크포인트 `checkpoint/{MODEL}_<code>_<dtag>_c<cycles>_p<p>_<노이즈태그>.pt` (검증 head-LER이 가장 낮을 때만 갱신)
 - QPU 런 `hardware/runs/<backend>_<타임스탬프>/` (job.json, 캘리브레이션 스냅샷, 제출 회로, raw.npz)
 - QPU LER 리포트 `results/hardware/<backend>_<코드>_<타임스탬프>.csv`
+- 집계 `results/gathered.csv`, 순위 상관 `results/spearman.csv`, 그림과 그 수치 `results/figures/`
 - 위 경로는 전부 `.gitignore` 대상이다.
 # 고정 규약
 ---
 Stim 회로와 QPU 회로는 check-value 수준에서 비트 단위로 일치해야 하고, 게이트 스크립트가 이를 검사한다.
-- Stim은 ancilla를 측정 후 리셋으로 처리하고, QPU는 리셋 없는 ancilla의 raw 비트를 `check_values()`의 XOR chain으로 복원한다.
+- Stim은 ancilla를 측정 후 리셋으로 처리하고, IBM QPU는 리셋 없는 ancilla의 raw 비트를 `check_values()`의 XOR chain으로 복원한다. color(IonQ)는 ancilla가 매번 0에서 시작해 raw 비트가 곧 check 값이다.
 - detector는 Z-check가 cycle 0부터, X-check가 cycle 1부터(cycle 간 XOR)이고 마지막에 final-data 기반 Z detector가 붙는다. observable은 logical Z다.
 - 데이터셋 텐서는 `(2*cycles, H, W)`이고 채널은 cycle마다 Z 평면, X 평면 순서다. 모델 입력에는 final-Z detector 채널 하나가 붙어 `2*cycles + 1` 채널이 된다. CNN, 그래프 모델, MWPM이 같은 detector 정보를 본다.
 - per-qubit 라벨은 final-data의 측정 flip(`stim.FlipSimulator`)이다. X-check 측정 때문에 final data의 개별 비트는 무작위이고 parity만 결정론적이기 때문이다. logical 라벨은 그 flip의 logical Z parity이며 실제 측정 비트의 parity와 같다.
 - 모델 인터페이스는 `forward(x) -> (qubit_logits, logical_logits)`, 모듈 수준 `compute_loss(...) -> (total, loss_logical, loss_qubit)`, 모듈 수준 `prepare_features(features, final_bits, code, distance)`다.
 # keys.json
 ---
-QPU 접근 정보는 저장소 루트의 `keys.json`에서만 읽는다. `keys.example.json`을 복사해 `ibm_API`와 `ibm_instance`(CRN)를 채운다. `keys.json`은 `.gitignore` 대상이고, 없으면 파이프라인의 QPU 수거와 제출 단계를 건너뛴다.
+QPU 접근 정보는 저장소 루트의 `keys.json`에서만 읽는다. `keys.example.json`을 복사해 채운다. `keys.json`은 `.gitignore` 대상이다.
+- IBM은 `ibm_API`와 `ibm_instance`(CRN), IonQ는 `ionq_api_key`다.
+- 파이프라인은 코드마다 그 백엔드의 키가 있는지 보고, 없으면 그 코드의 QPU 제출만 건너뛴다.
 # Slurm
 ---
 ```bash
@@ -122,5 +140,6 @@ sbatch pipeline.sbatch              # 게이트, QPU 수거, QPU 제출, 프로�
 LOOPS=5 sbatch pipeline.sbatch      # 5회 반복 (루프 끝에 자기 재제출)
 SMOKE=1 sbatch pipeline.sbatch      # 리허설 (스모크 데이터셋과 학습, QPU는 dry-run)
 ```
-- 두 스크립트의 `#SBATCH --partition` 값은 사용하는 서버의 파티션 이름과 맞아야 한다.
+- 두 스크립트는 파티션을 지정하지 않아 서버의 기본 파티션에서 돈다.
+- `sbatch`로 제출하면 GPU 번호는 Slurm이 정한다. 특정 GPU에서 돌리려면 Slurm 없이 `CUDA_VISIBLE_DEVICES=2 bash pipeline.sbatch`처럼 직접 실행한다. `LOOPS`와 `SMOKE`는 같은 방식으로 쓴다.
 - 환경 이름은 `config.json`의 `pipeline.conda_env`(기본 `KCS2`)에서 읽고, `train.sbatch`는 `CONDA_ENV=이름`으로 덮어쓸 수 있다.
