@@ -143,7 +143,10 @@ done
 
 # 이전 루프 잡이 락을 놓기 전에 다음 루프가 스케줄될 수 있으므로,
 # 즉시 실패(-n) 대신 최대 2시간 대기 — 루프 체인이 레이스로 죽지 않게.
-exec 9>/tmp/heavyhex_pipeline.lock
+# 락 파일은 저장소 안에 둔다 (/tmp의 공용 경로는 다른 계정이 먼저 만들면
+# 열 수 없다). 같은 체크아웃의 중복 실행만 막으면 된다.
+mkdir -p slurm_logs
+exec 9>slurm_logs/.pipeline.lock
 flock -w 7200 9 || { echo "2시간 내 락 획득 실패 — 중단"; exit 1; }
 
 echo "host=$(hostname) gpu=${CUDA_VISIBLE_DEVICES:-unset} env=$CONDA_ENV"
