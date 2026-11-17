@@ -6,8 +6,8 @@ Wraps the pre-decoder of the NVIDIA Ising-Decoding clone
 (./Ising-decoding, see docs/nvidia_api_notes.md) for the surface path:
 
   check values + final data bits
-    -> nvidia_input           (B, 4, T, D, D) float32 model input
-    -> predecoder_logits      (B, 4, T, D, D) raw logits
+    -> nvidia_input           (B, 4, T+1, D, D) float32 model input
+    -> predecoder_logits      (B, 4, T+1, D, D) raw logits
     -> detector_correction    correction in THIS repository's detector
                               order + the pre-decoder's own logical flip
     -> residual detectors = detectors ^ correction
@@ -19,13 +19,26 @@ Lattice: with data index = row * D + col, row = (y - 1) / 2, col =
 for cell NVIDIA's orientation O4 (internal name ZH): same X / Z
 stabilizer supports, logical Z on column 0. No relabeling is applied.
 
-Input channels (memory-Z basis, T = num_cycles):
-  0 x_type     X detectors on the D x D grid; cycles 0 and T-1 are zero
-               (the X detector of cycle t is check[t] ^ check[t-1])
-  1 z_type     Z detectors; cycle 0 is the check value itself
+Time axis: T = num_cycles of this repository map to T + 1 NVIDIA rounds.
+NVIDIA's memory circuit ends with a NOISELESS round followed by the data
+readout, so its last round is a perfect syndrome layer. This
+repository's counterpart of that layer is the final-Z detector layer
+(final data parity ^ last Z-check value), not the last ancilla cycle,
+which is as noisy as the others:
+    NVIDIA round t < T   <-  detectors of cycle t
+    NVIDIA round T       <-  final-Z detectors (Z) / nothing (X)
+NVIDIA's own boundary detectors (beyond its last round) have no
+counterpart here and are identically zero.
+
+Input channels (memory-Z basis):
+  0 x_type     X detectors on the D x D grid, rounds 1 .. T-1 (the X
+               detector of cycle t is check[t] ^ check[t-1]); rounds 0
+               and T are zero
+  1 z_type     Z detectors, rounds 0 .. T-1 (round 0 is the check value
+               itself), and the final-Z detectors at round T
   2 x_present  1.0 (weight-4) / 0.5 (weight-2) at the X anchor cells;
-               cycles 0 and T-1 are zero
-  3 z_present  same for Z, every cycle
+               rounds 0 and T are zero
+  3 z_present  same for Z, every round
 A stabilizer sits at its anchor data cell:
   X  weight-4 -> top-left;  horizontal pair -> left;  vertical pair -> top
   Z  weight-4 -> top-right; horizontal pair -> right; vertical pair -> top
@@ -34,10 +47,6 @@ A stabilizer sits at its anchor data cell:
 Output channels (thresholded at 0):
   0 Z corrections on data   1 X corrections on data
   2 X-check measurement corrections   3 Z-check measurement corrections
-
-The final-Z detectors are not shown to the network and are never
-corrected: a data correction at cycle t <= T-1 flips the last check
-value and the final data parity together.
 """
 import contextlib
 import sys
@@ -203,7 +212,7 @@ def load_predecoder(checkpoint, device="cpu"):
 
 
 def predecoder_logits(model, x, batch_size=8192):
-    """(B, 4, T, D, D) float32 numpy input -> logits, same shape."""
+    """(B, 4, R, D, D) float32 numpy input -> logits, same shape."""
     import torch
     device = next(model.parameters()).device
     out = []
@@ -217,53 +226,62 @@ def predecoder_logits(model, x, batch_size=8192):
 # ==================================================================
 # input / output conversion
 # ==================================================================
-def nvidia_input(check_mat, num_cycles, distance=3):
-    """(shots, N_CHECKS * C) check values -> (shots, 4, C, D, D) float32."""
+def nvidia_input(check_mat, dat, num_cycles, distance=3):
+    """(shots, N_CHECKS * C) check values + (shots, num_data) final data
+    bits -> (shots, 4, C + 1, D, D) float32 (module docstring)."""
     lay = surface_layout(distance)
     D, T = lay.distance, num_cycles
     check_mat = np.asarray(check_mat, dtype=np.uint8)
+    dat = np.asarray(dat, dtype=np.uint8)
     n = check_mat.shape[0]
     cm = check_mat.reshape(n, T, lay.n_checks)
-    x = np.zeros((n, 4, T, D, D), dtype=np.float32)
-    for name in lay.names["Z"]:
+    final = (dat.astype(np.int64) @ lay.H["Z"].T.astype(np.int64)) & 1
+    x = np.zeros((n, 4, T + 1, D, D), dtype=np.float32)
+    for i, name in enumerate(lay.names["Z"]):
         r, c = lay.cell[name]
         v = cm[:, :, lay.col[name]]
         det = v.copy()
         det[:, 1:] ^= v[:, :-1]
-        x[:, 1, :, r, c] = det
+        x[:, 1, :T, r, c] = det
+        x[:, 1, T, r, c] = final[:, i] ^ v[:, T - 1]     # final-Z detector
         x[:, 3, :, r, c] = lay.weight[name]
     for name in lay.names["X"]:
         r, c = lay.cell[name]
         v = cm[:, :, lay.col[name]]
-        if T > 2:
-            x[:, 0, 1:T - 1, r, c] = v[:, 1:T - 1] ^ v[:, :T - 2]
-            x[:, 2, 1:T - 1, r, c] = lay.weight[name]
+        if T > 1:
+            x[:, 0, 1:T, r, c] = v[:, 1:] ^ v[:, :-1]
+            x[:, 2, 1:T, r, c] = lay.weight[name]
     return x
 
 
 def detector_correction(logits, num_cycles, distance=3,
                         th_data=0.0, th_syn=0.0):
-    """Pre-decoder logits -> (correction, pre_logical).
+    """Pre-decoder logits (shots, 4, C + 1, D, D) -> (correction,
+    pre_logical).
 
     correction   (shots, num_detectors) uint8 in this repository's
                  detector order; XOR it into the detectors to get the
-                 residual. For check type s, cycle t:
+                 residual. For check type s, round t:
                    corr[t] = syn[t] ^ syn[t-1] ^ H_s . data[t]   (syn[-1]=0)
                  with data = X corrections for Z checks and Z corrections
-                 for X checks. Final-Z detectors stay 0.
+                 for X checks. Z rounds 0 .. C-1 go to the Z detectors of
+                 the cycles and round C to the final-Z detectors; X
+                 rounds 1 .. C-1 go to the X detectors (X round C has no
+                 detector here).
     pre_logical  (shots,) uint8: parity of the X corrections on the
-                 logical-Z support over all cycles."""
+                 logical-Z support over all rounds."""
     lay = surface_layout(distance)
     D, T = lay.distance, num_cycles
     logits = np.asarray(logits)
-    n = logits.shape[0]
+    n, R = logits.shape[0], logits.shape[2]
+    assert R == T + 1, f"expected {T + 1} rounds, got {R}"
     data = {"X": (logits[:, 0] >= th_data),          # Z errors -> X checks
             "Z": (logits[:, 1] >= th_data)}          # X errors -> Z checks
     syn = {"X": (logits[:, 2] >= th_syn), "Z": (logits[:, 3] >= th_syn)}
     nn = {}
     for t in ("Z", "X"):
-        flat = data[t].reshape(n, T, D * D).astype(np.int64)
-        induced = (flat @ lay.H[t].T.astype(np.int64)) & 1    # (n, T, S)
+        flat = data[t].reshape(n, R, D * D).astype(np.int64)
+        induced = (flat @ lay.H[t].T.astype(np.int64)) & 1    # (n, R, S)
         pred = np.stack([syn[t][:, :, r, c] for r, c in
                          (lay.cell[nm] for nm in lay.names[t])],
                         axis=2).astype(np.int64)
@@ -274,10 +292,11 @@ def detector_correction(logits, num_cycles, distance=3,
     out = np.zeros((n, lay.num_detectors(T)), dtype=np.uint8)
     for key, k in index.items():
         if key[0] == "F":
-            continue
-        t, name, cyc = key
-        out[:, k] = nn[t][:, cyc, lay.names[t].index(name)]
-    x_flat = data["Z"].reshape(n, T, D * D)
+            out[:, k] = nn["Z"][:, T, lay.names["Z"].index(key[1])]
+        else:
+            t, name, cyc = key
+            out[:, k] = nn[t][:, cyc, lay.names[t].index(name)]
+    x_flat = data["Z"].reshape(n, R, D * D)
     pre_logical = (x_flat[:, :, lay.logical_z].sum(axis=(1, 2)) & 1
                    ).astype(np.uint8)
     return out, pre_logical
@@ -294,8 +313,8 @@ def nvidia_mwpm_decode(model, check_mat, dat, num_cycles, matching,
     _, det_fn = _surface_modules(distance)
     det = det_fn(np.asarray(check_mat, dtype=np.uint8),
                  np.asarray(dat, dtype=np.uint8), num_cycles)
-    logits = predecoder_logits(model, nvidia_input(check_mat, num_cycles,
-                                                   distance))
+    logits = predecoder_logits(model, nvidia_input(check_mat, dat,
+                                                   num_cycles, distance))
     corr, pre_logical = detector_correction(logits, num_cycles, distance)
     residual = det ^ corr
     pred = np.asarray(matching.decode_batch(residual), dtype=np.uint8)

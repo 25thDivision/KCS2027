@@ -36,12 +36,20 @@
 - 래퍼의 `nvidia_imports()` 컨텍스트가 이 저장소 모듈을 잠시 치우고 NVIDIA 쪽을 import하게 한 뒤 되돌린다. NVIDIA 코드의 import는 함수 안의 지연 import까지 이 블록 안에서 일어나야 한다.
 # 입력 텐서
 ---
-- 형태는 `(B, 4, T, D, D)` float32다. 채널은 순서대로 `x_type`, `z_type`, `x_present`, `z_present`다.
+- 형태는 `(B, 4, T, D, D)` float32다 (T는 NVIDIA 라운드 수). 채널은 순서대로 `x_type`, `z_type`, `x_present`, `z_present`다.
 - 현재 코드는 measurement가 아니라 detector 벡터에서 입력을 만든다. 구현이 두 군데 있고 결과는 같다. `code/data/predecoder_transform.py`의 `dets_to_predecoder_inputs`와 `code/qec/surface_code/detector_input.py`의 `SurfaceDetectorInputTransform`이다.
 - detector 벡터의 순서는 `half = (D*D - 1) / 2`로 두고, 기준 basis의 첫 라운드 detector `half`개, 이어서 라운드 1 ~ T-1마다 X `half`개와 Z `half`개, 마지막에 경계 detector `half`개다. 전체 길이는 `2 * T * half`다.
 - basis Z에서 `z_type[t]`는 라운드 t의 Z detector다. `x_type[t]`는 라운드 1 ~ T-2의 X detector이고 라운드 0과 T-1은 0으로 가린다. 마지막 라운드의 X detector는 입력에 들어가지 않는다.
 - `x_present`, `z_present`는 stabilizer가 놓인 칸에 가중치를 둔 `D x D` 지도다. weight-4는 1.0, weight-2는 0.5다. basis Z에서 `x_present`의 라운드 0과 T-1은 0이다.
 - 경계 detector는 모델 입력에 들어가지 않고 잔차로 그대로 넘어간다.
+## 시간축 맞추기
+---
+- NVIDIA 메모리 회로의 마지막 라운드는 노이즈가 없다. 마지막 라운드의 CX, 측정, data 측정에 오류가 붙지 않는다 (`MemoryCircuit`이 만든 Stim 회로의 끝부분으로 확인). 그래서 NVIDIA의 마지막 라운드는 완전한 신드롬 층이고, 그 뒤의 경계 detector는 어떤 오류에도 걸리지 않는다.
+- 이 저장소 회로는 마지막 cycle도 다른 cycle과 똑같이 노이즈가 있고, 완전한 층에 해당하는 것은 final-Z detector 층(final data 패리티와 마지막 Z check 값의 XOR)이다.
+- 그래서 이 저장소의 T cycle은 NVIDIA의 T + 1 라운드에 대응시킨다. 라운드 t < T는 cycle t의 detector, 라운드 T의 Z는 final-Z detector, 라운드 T의 X는 비운다. NVIDIA의 경계 detector 자리는 대응이 없어 0이다.
+- 이렇게 두면 NVIDIA가 가리는 X 라운드(0과 T)가 이 저장소에 X detector가 없는 자리와 정확히 겹치고, cycle 1 ~ T-1의 X detector는 전부 입력에 들어간다.
+- 이 대응이 맞다는 것은 `tests/test_nvidia.py`의 `test_fault_structure_matches_nvidia_circuit`으로 확인한다. 한 오류가 함께 뒤집는 Z detector의 집합을 두 회로의 DEM에서 뽑아 비교하면 d 3, d 5 모두 완전히 같다.
+- 처음 구현은 T cycle을 NVIDIA의 T 라운드에 대응시키고 final-Z를 NVIDIA 경계 detector로 넘겼다 (KCS 래퍼와 같은 배치). 이 경우 마지막 cycle의 측정 오류를 모델이 data 오류로 해석해서 MWPM 단독보다 크게 나빠졌다. 2026-11-17에 위 대응으로 고쳤다.
 ## 격자 배치
 ---
 - stabilizer는 자기 지지 data 칸 중 하나(anchor)에 놓인다. `code/qec/surface_code/data_mapping.py`의 규칙은 아래와 같다. 행이 작은 쪽이 위, 열이 작은 쪽이 왼쪽이다.
@@ -75,21 +83,30 @@
 $$R_0 = d_0 + syn_0 + S_0$$
 $$R_t = d_t + syn_t + syn_{t-1} + S_t \quad (t \ge 1)$$
 - logical 보정 `pre_L`은 basis Z에서 logical Z 지지 위의 X 보정을 모든 라운드에 걸쳐 XOR한 값이다. 최종 logical 예측은 잔차를 global 디코더로 푼 결과와 `pre_L`의 XOR이다.
-- NVIDIA 모듈은 basis Z에서 마지막 라운드의 X detector를 잔차에서도 뺀다(입력에서 가린 값을 그대로 쓴다). 이 저장소 래퍼는 원래 detector에 보정을 XOR하므로 그 detector를 남긴다. 나머지는 비트 단위로 같다(`test_residual_matches_nvidia_eval_module`).
+- NVIDIA 모듈은 basis Z에서 마지막 라운드의 X 블록을 입력 없이 예측값만으로 채운다. 이 저장소에는 그 자리에 detector가 없어 버린다. 나머지 블록은 임의 logit에 대해 비트 단위로 같다 (`test_residual_matches_nvidia_eval_module`).
 # 검증 범위
 ---
 - 모델 카드(`Ising-decoding/models/README.md`)는 receptive field보다 작은 distance를 검증 범위 밖이라고 적는다. Fast는 R 9, Accurate는 R 13이고 이 저장소의 d 3, d 5는 둘 다 그보다 작다.
 - 모델 카드는 노이즈가 학습 분포와 맞는 회로 수준 Pauli 채널이어야 하고, 다른 노이즈 모델이나 하드웨어의 신드롬에는 다시 학습한 체크포인트가 필요하다고 적는다.
-- 이 저장소의 추상 surface d 3 회로(cycles 3, 200000 shot, seed 11)에서 Fast로 잰 값은 아래와 같다. 여섯 조합 모두 pre-decoder를 붙인 쪽이 MWPM 단독보다 높다. 수용 기준이 아니라 기록이다.
-| 노이즈 프로파일 | p | MWPM | Fast + MWPM |
-|---|---|---|---|
-| dp0.001_mf0.01_rf0.01_gd0.008 | 0.005 | 0.0356 | 0.0550 |
-| dp0.001_mf0.01_rf0.01_gd0.008 | 0.05 | 0.0911 | 0.1121 |
-| dp0.005_mf0.02_rf0.02_gd0.015 | 0.005 | 0.1095 | 0.1408 |
-| dp0.005_mf0.02_rf0.02_gd0.015 | 0.05 | 0.1693 | 0.1993 |
-| dp0.01_mf0.05_rf0.05_gd0.01 | 0.005 | 0.1838 | 0.2316 |
-| dp0.01_mf0.05_rf0.05_gd0.01 | 0.05 | 0.2435 | 0.2822 |
-- 이 값도 임시 스크립트로 한 번 잰 것이고 결과 파일은 없다. 경로는 `decoders/nvidia_predecoder.nvidia_mwpm_decode`와 `baseline/mwpm.build_matching`이다.
+- 이 저장소의 추상 surface 회로(cycles 3, 400000 shot, seed 11)에서 잰 값은 아래와 같다. 수용 기준이 아니라 기록이다. 임시 스크립트로 한 번 잰 것이고 결과 파일은 없다. 경로는 `decoders/nvidia_predecoder.nvidia_mwpm_decode`와 `baseline/mwpm.build_matching`이다.
+| d | 노이즈 프로파일 | p | MWPM | Fast + MWPM | Accurate + MWPM |
+|---|---|---|---|---|---|
+| 3 | dp0.001_mf0.002_rf0.002_gd0.003 | 0 | 0.00409 | 0.00441 | 0.00507 |
+| 3 | dp0.001_mf0.01_rf0.01_gd0.008 | 0.005 | 0.03568 | 0.03888 | 0.04119 |
+| 3 | dp0.005_mf0.02_rf0.02_gd0.015 | 0.005 | 0.11022 | 0.11735 | 0.12141 |
+| 3 | dp0.01_mf0.05_rf0.05_gd0.01 | 0.005 | 0.18376 | 0.20494 | 0.21155 |
+| 5 | dp0.001_mf0.002_rf0.002_gd0.003 | 0 | 0.00085 | 0.00171 | 0.00147 |
+| 5 | dp0.001_mf0.01_rf0.01_gd0.008 | 0.005 | 0.02372 | 0.03335 | 0.03119 |
+| 5 | dp0.005_mf0.02_rf0.02_gd0.015 | 0.005 | 0.11781 | 0.14457 | 0.14216 |
+| 5 | dp0.01_mf0.05_rf0.05_gd0.01 | 0.005 | 0.21120 | 0.25466 | 0.25388 |
+- 첫 줄의 프로파일은 `config.json`에 없는 값이고 낮은 노이즈에서의 거동을 보려고 직접 넣은 것이다.
+- pre-decoder는 detector 밀도를 약 10분의 1로 줄인다 (d 3 첫 줄에서 0.0287이 0.0027로). 그래도 LER은 여덟 조합 모두 MWPM 단독보다 조금 높다.
+- 같은 체크포인트를 NVIDIA 자체 회로(ZH, 4 라운드, 400000 shot)에 쓰면 MWPM보다 낮다. 차이는 회로의 노이즈 모델에서 온다고 본다.
+| d | p | MWPM | Fast + MWPM | Accurate + MWPM |
+|---|---|---|---|---|
+| 3 | 0.003 | 0.01128 | 0.01088 | 0.01063 |
+| 5 | 0.003 | 0.00307 | 0.00242 | 0.00215 |
+| 5 | 0.006 | 0.02004 | 0.01693 | 0.01533 |
 # 의존성
 ---
 - `code/requirements_public_inference.txt`의 목록 중 `KCS2`에 없던 것은 omegaconf, hydra-core, ldpc, beliefmatching, onnx, chromobius였고 2026-11-17에 설치했다. 딸려 온 패키지까지 10개가 추가됐고 기존 핀(torch, numpy, stim, PyMatching, scipy, qiskit)은 바뀌지 않았다.
