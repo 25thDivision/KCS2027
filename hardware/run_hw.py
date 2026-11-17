@@ -164,6 +164,9 @@ def cmd_submit(args):
     from qiskit_ibm_runtime import SamplerV2
 
     require_implemented(args.code, args.distance)
+    if args.code == "color":
+        sys.exit("--code color runs on IonQ; its submission path is not "
+                 "implemented yet (analyze --npz works).")
     keys = load_keys()
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -578,6 +581,17 @@ def cmd_analyze(args):
                             distance=s_dist)
         logical_fn = partial(rss.logical_label_rotatedSurface,
                              distance=s_dist)
+    elif code == "color":
+        from functools import partial
+        from circuits.color import colorcode as cc
+        from dataset_generation import color_stim as cs
+        c_dist = normalize_distance("color", distance)
+        n_checks = cc.color_def(c_dist).N_CHECKS
+        n_data = cc.color_def(c_dist).NUM_DATA
+        cv_fn = partial(cc.check_values, distance=c_dist)
+        mat_fn = partial(cs.check_matrix_from_dict_color, distance=c_dist)
+        tensor_fn = partial(cs.syndrome_tensor_color, distance=c_dist)
+        logical_fn = partial(cs.logical_label_color, distance=c_dist)
     else:
         cv_fn, n_checks, n_data = check_values, N_CHECKS, 17
         mat_fn, tensor_fn, logical_fn = (check_matrix_from_dict,
@@ -778,7 +792,8 @@ def cmd_analyze(args):
     # metadata is unavailable, e.g. a loose --npz file)
     job_id = job_id or (Path(args.npz).resolve().parent.name if args.npz
                         else None)
-    code_label = "rotatedSurface" if code == "surface" else "heavyhex"
+    code_label = {"surface": "rotatedSurface", "color": "color"}.get(
+        code, "heavyhex")
     ts = (submitted_at.replace("-", "").replace(":", "").replace("T", "-")
           if submitted_at else time.strftime("%Y%m%d-%H%M%S"))
     RESULTS_HW_DIR.mkdir(parents=True, exist_ok=True)

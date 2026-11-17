@@ -8,8 +8,15 @@ from decoders.hybrid import (
 from model import code_spec, get_model_class, get_model_module
 
 CYCLES = 3
-CASES = [("heavyhex", 3), ("surface", 3), ("surface", 5)]
+CASES = [("heavyhex", 3), ("surface", 3), ("surface", 5), ("color", 3),
+         ("color", 5)]
 PARAMS = [pytest.param(c, d, id=f"{c}{d}") for c, d in CASES]
+
+
+def exact(code, distance):
+    """True when the per-qubit decoder reproduces EVERY syndrome (the
+    color d = 5 restriction decoder only does so for part of them)."""
+    return not (code == "color" and distance == 5)
 
 
 class _FixedQubits(torch.nn.Module):
@@ -42,8 +49,10 @@ def test_matcher_definition(code, distance):
     m = FinalSyndromeMatcher(code, distance)
     nq = code_spec(code, distance)["num_qubits"]
     assert m.H.shape[1] == nq and m.H.any(axis=1).all()
-    # matchable: every data qubit sits in one or two Z checks
-    assert set(np.unique(m.H.sum(axis=0))) <= {1, 2}
+    if code == "color":            # up to three faces per qubit
+        assert set(np.unique(m.H.sum(axis=0))) <= {1, 2, 3}
+    else:                          # matchable: one or two Z checks
+        assert set(np.unique(m.H.sum(axis=0))) <= {1, 2}
     assert m.logical_z and max(m.logical_z) < nq
 
 
@@ -62,9 +71,12 @@ def test_residual_slots_match_prepare_features(code, distance):
 
 @pytest.mark.parametrize("code, distance", PARAMS)
 def test_decode_reproduces_syndrome(code, distance):
-    """Every syndrome is matched exactly."""
+    """Every syndrome is matched exactly (color d = 5: the syndromes of
+    single errors)."""
     m = FinalSyndromeMatcher(code, distance)
     bits = random_bits(code, distance, 2000, seed=1)
+    if not exact(code, distance):
+        bits = np.eye(m.num_qubits, dtype=np.uint8)
     s = m.syndrome(bits)
     c = m.decode(s)
     assert c.shape == bits.shape
@@ -111,9 +123,10 @@ def test_ml_then_mwpm_completes_the_model(code, distance):
     bits = random_bits(code, distance, 500, seed=2)
     s = m.syndrome(bits)
 
-    guess = random_bits(code, distance, 500, seed=3)
-    c2 = m.decode(s ^ m.syndrome(guess))
-    assert np.array_equal(m.syndrome(guess ^ c2), s)
+    if exact(code, distance):
+        guess = random_bits(code, distance, 500, seed=3)
+        c2 = m.decode(s ^ m.syndrome(guess))
+        assert np.array_equal(m.syndrome(guess ^ c2), s)
 
     truth = torch.from_numpy(bits)
     oracle = _FixedQubits(lambda x: truth[:x.shape[0]])
@@ -153,10 +166,12 @@ def test_mwpm_ml_residual_is_the_final_z_detector(code, distance):
     z_last = m.last_cycle_syndrome(feats)
     c1 = m.decode(z_last)
     r = m.syndrome(bits) ^ m.syndrome(c1)
+    assert r.any()                              # not a vacuous check
+    if not exact(code, distance):
+        return        # c1 need not reproduce z_last; r is still H.(f ^ c1)
     assert np.array_equal(r, m.syndrome(bits) ^ z_last)
     real = np.asarray(mod.prepare_features(feats, bits, code, distance))
     assert np.array_equal(m.residual_input(r, CYCLES)[:, -1], real[:, -1])
-    assert r.any()                              # not a vacuous check
 
 
 @pytest.mark.parametrize("code, distance", PARAMS)

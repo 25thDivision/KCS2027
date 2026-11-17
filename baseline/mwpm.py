@@ -2,8 +2,10 @@
 """
 MWPM baseline decoder (PyMatching, Stim DEM based)
 ==================================================
-Builds a matching decoder from the abstract Stim circuit's detector error
-model:
+heavyhex / surface: builds a matching decoder from the abstract Stim
+circuit's detector error model (the color code has no such route and uses
+the restriction decoder of baseline/mwpm_color.py through the same
+functions):
     stim.Circuit.detector_error_model(decompose_errors=True)
       -> pymatching.Matching.from_detector_error_model(...)
 
@@ -50,6 +52,11 @@ def build_matching(num_cycles, error_type, p, noise_profile,
     order either way, so the same detector reconstructions feed any of
     the Matching objects."""
     require_implemented(code, distance)
+    if code == "color":
+        # no DEM route for the color code (baseline/mwpm_color.py): a
+        # noise-independent per-qubit restriction decoder instead
+        from baseline.mwpm_color import RestrictionDecoder
+        return RestrictionDecoder(distance)
     if code == "surface":
         if is_qpu_profile(noise_profile):
             from dataset_generation.rotatedSurface_qpu_stim import (
@@ -95,6 +102,10 @@ def mwpm_ler_from_dataset(npz_file, matching=None):
         matching = build_matching(int(d["num_cycles"]), str(d["error_type"]),
                                   float(d["error_rate"]),
                                   str(d["noise_profile"]), code, distance)
+    if code == "color":
+        from baseline.mwpm_color import decode_ler as color_decode_ler
+        return color_decode_ler(matching, d["labels"],
+                                d["logical_labels"])[0]
     if code == "surface":
         from dataset_generation.rotatedSurface_stim import (
             detectors_from_tensor_rotatedSurface)
@@ -116,6 +127,12 @@ def mwpm_ler_from_hardware(check_mat, dat, num_cycles, matching,
     (for per-PUB spread statistics in hardware reports).
     """
     require_implemented(code, distance)
+    if code == "color":
+        from baseline.mwpm_color import decode_ler as color_decode_ler
+        from dataset_generation.color_stim import logical_label_color
+        l, pred = color_decode_ler(matching, dat,
+                                   logical_label_color(dat, distance))
+        return (l, pred) if return_pred else l
     if code == "surface":
         from dataset_generation.rotatedSurface_stim import (
             detectors_from_dataset_rotatedSurface,

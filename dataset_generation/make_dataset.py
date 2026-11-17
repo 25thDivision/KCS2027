@@ -142,6 +142,19 @@ def code_generator(code, noise, cycles, et, p, distance=3):
             raise ValueError(
                 f"noise profile '{noise}' is a '{prof_code}' calibration "
                 f"profile — it cannot generate --code {code} datasets")
+    if code == "color":
+        from functools import partial
+        from dataset_generation.color_stim import (
+            build_color_stim_circuit, sample_flips_color,
+            syndrome_tensor_color, logical_label_color)
+        from circuits.color.colorcode import color_def
+        S = color_def(distance)
+        return (build_color_stim_circuit(cycles, et, p, noise,
+                                         distance=distance),
+                partial(sample_flips_color, distance=distance),
+                partial(syndrome_tensor_color, distance=distance),
+                partial(logical_label_color, distance=distance),
+                S.GRID_SHAPE, S.NUM_DATA)
     if code == "surface":
         from functools import partial
         from dataset_generation.rotatedSurface_stim import (

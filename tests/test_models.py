@@ -19,7 +19,8 @@ from model.common import dual_head_loss
 
 BATCH = 8
 CYCLES = 3
-CASES = [("heavyhex", 3), ("surface", 3), ("surface", 5)]
+CASES = [("heavyhex", 3), ("surface", 3), ("surface", 5), ("color", 3),
+         ("color", 5)]
 NEEDS_CUDA = {"graph_mamba"}
 
 PARAMS = [pytest.param(name, code, distance, id=f"{name}-{code}{distance}")

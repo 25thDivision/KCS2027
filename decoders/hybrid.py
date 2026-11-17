@@ -4,7 +4,8 @@ Hybrid decoders: MWPM + ML and ML + MWPM
 ========================================
 baseline/mwpm.py predicts only the observable flip, so the hybrids use a
 per-qubit MWPM, pymatching.Matching(H_z), that turns a Z syndrome into an
-X-correction mask over the data qubits. H_z comes from the code
+X-correction mask over the data qubits (color code: the restriction
+decoder of baseline/mwpm_color.py, same role). H_z comes from the code
 definition (model.graph.code_adapter: the Z-check supports in final-Z
 detector order). Two Z syndromes of a shot are involved:
 
@@ -25,8 +26,10 @@ detector order). Two Z syndromes of a shot are involved:
   both      logical flip = parity of (c1 ^ c2) over LOGICAL_Z
 
 Matching(H_z) returns a correction that reproduces its input syndrome
-(every syndrome of the codes here is matchable: each H_z has weight-1
-columns, i.e. a boundary). In MWPM+ML the matching therefore removes
+(every syndrome of heavyhex / surface is matchable: each H_z has weight-1
+columns, i.e. a boundary; the color restriction decoder reproduces it
+for every d = 3 syndrome and for part of the d = 5 ones, and r is always
+computed from the correction actually returned). In MWPM+ML the matching therefore removes
 what the ancillas saw at the last cycle and the model is left with the
 disagreement between the ancillas and the data readout: errors after
 the last cycle and measurement errors of the last cycle. (Decoding s
@@ -68,7 +71,14 @@ class FinalSyndromeMatcher:
         for i, name in enumerate(self.z_names):
             self.H[i, ad["support_idx"][name]] = 1
         self.logical_z = list(logical_qubit_indices(code, distance))
-        self.matching = pymatching.Matching(self.H)
+        if code == "color":
+            # a data qubit sits in up to three faces, which a matching
+            # graph cannot hold: the restriction decoder takes its place
+            from baseline.mwpm_color import RestrictionDecoder
+            self.matching = RestrictionDecoder(distance)
+            assert np.array_equal(self.matching.H, self.H)
+        else:
+            self.matching = pymatching.Matching(self.H)
 
     def syndrome(self, bits):
         """(shots, num_qubits) data bits -> (shots, num_z_checks)."""

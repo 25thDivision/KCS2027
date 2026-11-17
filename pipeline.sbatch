@@ -132,7 +132,7 @@ echo "=== [1/6] 규약 게이트 ==="
 for cd in "${COMBOS[@]}"; do
     code="${cd%%:*}"; dist="${cd##*:}"
     echo "--- gate: $code distance=$dist ---"
-    if [ "$code" = "surface" ]; then     # 게이트가 distance별로 돈다
+    if [ "$code" = "surface" ] || [ "$code" = "color" ]; then  # distance별 게이트
         python "$(gate_of "$code")" --distance "$dist"
     else
         python "$(gate_of "$code")"

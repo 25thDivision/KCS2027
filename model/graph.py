@@ -85,6 +85,18 @@ def code_adapter(code, distance=3):
                          for n in S.CYCLE_ORDER},
             coord=dict(S.ANC_GRID), grid=S.GRID_SHAPE,
             num_detectors=partial(num_detectors, distance=key[1]))
+    if key in (("color", 3), ("color", 5)):
+        from functools import partial
+        from dataset_generation.color_stim import num_detectors
+        from circuits.color.colorcode import color_def
+        S = color_def(key[1])
+        return dict(
+            check_at=list(S.CYCLE_ORDER), z_names=set(S.Z_NAMES),
+            z_pos=list(S.Z_POS),
+            support_idx={n: list(S.CHECK_DEFS[n][1])
+                         for n in S.CYCLE_ORDER},
+            coord=dict(S.ANC_GRID), grid=S.GRID_SHAPE,
+            num_detectors=partial(num_detectors, distance=key[1]))
     if code in CODES:
         raise NotImplementedError(
             f"no detector graph for --code {code} --distance {distance} yet")
