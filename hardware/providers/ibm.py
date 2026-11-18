@@ -19,13 +19,16 @@ HardwareProvider interface (hardware/providers/base.py):
            calibration as of execution time in properties_run.json
   snapshot properties.json / configuration.json / target.pkl
 
-Credentials: keys.json fields ibm_API and ibm_instance.
+Credentials: keys.json fields ibm_API and ibm_instance. ibm_instance is
+the default instance; a backend that is not on it is looked up on the
+account's other instances (resolve_instance).
 """
 import json
 import pickle
 import shutil
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -41,10 +44,56 @@ from circuits.heavyhex.dd_utils import apply_dd, dd_pulse_stats
 from dataset_generation import normalize_distance, require_implemented
 
 
-def get_service(keys):
+_INSTANCE_OF = {}            # backend name -> instance CRN (per process)
+
+
+def resolve_instance(keys, backend=None):
+    """CRN of the account instance that serves `backend`.
+
+    keys.json's ibm_instance when it has the backend (or when no backend
+    is given); otherwise the first other instance of the same account
+    that lists it. Backends can sit on different instances of one
+    account (2026-11-18: ibm_yonsei only on the on-prem instance, the
+    other IBM backends on the premium one), so keys.json keeps a single
+    default instance."""
+    default = keys["ibm_instance"]
+    if backend is None:
+        return default
+    if backend in _INSTANCE_OF:
+        return _INSTANCE_OF[backend]
+    from qiskit_ibm_runtime import QiskitRuntimeService
+    service = QiskitRuntimeService(token=keys["ibm_API"], instance=default)
+    found = default if backend in {b.name for b in service.backends()} \
+        else None
+    if found is None:
+        for inst in service.instances():
+            if inst.get("crn") == default:
+                continue
+            try:
+                other = QiskitRuntimeService(token=keys["ibm_API"],
+                                             instance=inst["crn"])
+                names = {b.name for b in other.backends()}
+            except Exception:
+                continue
+            if backend in names:
+                found = inst["crn"]
+                print(f"{backend}: not on the keys.json instance - using "
+                      f"instance '{inst.get('name')}'")
+                break
+    if found is None:
+        raise RuntimeError(
+            f"backend '{backend}' is on none of the account's instances "
+            f"({[i.get('name') for i in service.instances()]})")
+    _INSTANCE_OF[backend] = found
+    return found
+
+
+def get_service(keys, backend=None):
+    """QiskitRuntimeService on the instance that serves `backend`
+    (resolve_instance; keys.json's ibm_instance when backend is None)."""
     from qiskit_ibm_runtime import QiskitRuntimeService
     return QiskitRuntimeService(token=keys["ibm_API"],
-                                instance=keys["ibm_instance"])
+                                instance=resolve_instance(keys, backend))
 
 
 
@@ -82,6 +131,16 @@ def snapshot_backend(backend, run_dir):
         print(f"   WARNING: could not pickle target: {e}")
 
 
+def _no_placement(args, patch):
+    """Stop the submission: no valid placement under the current
+    calibration and no static embedding to fall back to. Nothing is
+    submitted; the pipeline tries again in its next loop."""
+    raise SystemExit(
+        f"{args.backend}: no valid {patch} placement under the current "
+        f"calibration and no static embedding for this backend - not "
+        f"submitted (thresholds: circuits/placement.py)")
+
+
 def build_and_place(args, backend, coupling_path):
     """The code's hardware circuit and its device placement.
 
@@ -116,6 +175,8 @@ def build_and_place(args, backend, coupling_path):
             [tuple(e) for e in cm["coupling_map"]], backend.target,
             static_mapping=static_map,
             reselect=getattr(args, "reselect_layout", False))
+        if mapping is None and static_map is None:
+            _no_placement(args, f"surface d={s_dist}")
         if mapping is None:
             print("WARNING: 유효한 자동 배치 없음 — 정적 45도 임베딩 폴백")
             validate_backend_surface(coupling_path, distance=s_dist)
@@ -149,6 +210,8 @@ def build_and_place(args, backend, coupling_path):
             [tuple(e) for e in cm["coupling_map"]], backend.target,
             static_mapping=static_map,
             reselect=getattr(args, "reselect_layout", False))
+        if mapping is None and static_map is None:
+            _no_placement(args, "heavyhex 37q")
         if mapping is None:
             print("WARNING: 유효한 자동 배치 없음 — 정적 임베딩으로 폴백")
             validate_backend(coupling_path)
@@ -183,11 +246,16 @@ def _submit(args):
     # 1) coupling map + backend handle, then 2) the code's hardware
     #    circuit and its device placement
     coupling_path = fetch(args.backend, token=keys["ibm_API"],
-                          instance=keys["ibm_instance"], outdir=str(RUNS_DIR))
-    service = get_service(keys)
+                          instance=resolve_instance(keys, args.backend),
+                          outdir=str(RUNS_DIR))
+    service = get_service(keys, args.backend)
     backend = service.backend(args.backend)
-    qc, layout, placement_info = build_and_place(args, backend,
-                                                 coupling_path)
+    try:
+        qc, layout, placement_info = build_and_place(args, backend,
+                                                     coupling_path)
+    except BaseException:
+        Path(coupling_path).unlink(missing_ok=True)   # no run folder made
+        raise
 
     # 3) transpile with the fixed physical layout (patch labels mapped to
     #    this backend's device qubits), then insert DD
@@ -306,7 +374,6 @@ def _plan_pubs(shots, pubs, max_shots, max_experiments):
 def _collect(run_dir, job_ids, cycles, poll):
     """Wait for the run's jobs, write raw.npz (+ job metrics and the
     calibration as of execution time). Returns the raw.npz path."""
-    service = get_service(load_keys(("ibm_API", "ibm_instance")))
     meta = {}
     meta_path = run_dir / "job.json"
     if meta_path.exists():
@@ -315,6 +382,8 @@ def _collect(run_dir, job_ids, cycles, poll):
         job_ids = (meta.get("job_ids") or [meta.get("job_id")]
                    if (meta.get("job_ids") or meta.get("job_id"))
                    else job_ids)
+    service = get_service(load_keys(("ibm_API", "ibm_instance")),
+                          meta.get("backend"))
 
     syns, dats, pub_shots, metrics_all = [], [], [], []
     first_running = None
@@ -388,8 +457,13 @@ class IBMProvider(HardwareProvider):
             cycles=cycles, shots=shots, pubs=pubs, dry_run=dry_run, dd=dd,
             reselect_layout=reselect_layout))
 
+    def _service(self):
+        # runs without a job.json predate the provider split ("ibm_legacy")
+        backend = None if self.backend == "ibm_legacy" else self.backend
+        return get_service(load_keys(("ibm_API", "ibm_instance")), backend)
+
     def status(self, job_ids):
-        service = get_service(load_keys(("ibm_API", "ibm_instance")))
+        service = self._service()
         names = []
         for jid in job_ids:
             st = service.job(jid).status()
@@ -397,7 +471,7 @@ class IBMProvider(HardwareProvider):
         return names
 
     def wait(self, job_ids, poll=30):
-        service = get_service(load_keys(("ibm_API", "ibm_instance")))
+        service = self._service()
         for jid in job_ids:
             wait_for_job(service.job(jid), poll=poll)
 
@@ -405,5 +479,5 @@ class IBMProvider(HardwareProvider):
         return _collect(run_dir, job_ids, cycles, poll)
 
     def snapshot(self, run_dir):
-        service = get_service(load_keys(("ibm_API", "ibm_instance")))
+        service = self._service()
         snapshot_backend(service.backend(self.backend), run_dir)

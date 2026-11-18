@@ -10,9 +10,11 @@
 ---
 | 코드 | `--code` | `--distance` | 플랫폼 | 기본 백엔드 |
 |---|---|---|---|---|
-| heavy-hex surface code | `heavyhex` | 33, 35, 53 | IBM Heron | `ibm_pittsburgh` |
-| rotated surface code | `surface` | 3, 5 | IBM Nighthawk | `ibm_miami` |
+| heavy-hex surface code | `heavyhex` | 33, 35, 53 | IBM Nighthawk | `ibm_yonsei` |
+| rotated surface code | `surface` | 3, 5 | IBM Nighthawk | `ibm_yonsei` |
 | color code | `color` | 3, 5 | IonQ Forte-1 | `ionq_forte1` |
+- 기본 백엔드는 `config.json`의 `pipeline.backends`다. 2026-11-18부터 heavyhex와 surface 모두 `ibm_yonsei`(Nighthawk, 12x10 정사각 격자)이고, heavy-hex 패치는 정사각 격자의 부분 그래프로 배치된다. Heron(`ibm_boston` 등)은 `--backend`로 고를 수 있다.
+- `keys.json`의 `ibm_instance`에 없는 백엔드는 같은 계정의 다른 인스턴스에서 찾는다 (ibm_yonsei는 on-prem 인스턴스에 있다).
 - heavyhex의 distance는 (dx, dz)를 두 자리 수로 적는다. 33은 (3,3), 35는 (3,5), 53은 (5,3)이고, 3은 33의 줄임으로 받는다.
 - 파일 이름의 distance 태그는 `dataset_generation.distance_tag` 하나가 정한다. heavyhex (3,3)은 `d3`, (3,5)는 `d35`, (5,3)은 `d53`이고 surface와 color는 `d3`, `d5`다.
 # 현재 구현 상태
@@ -108,7 +110,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/
 - `sweep` 스윕 정의다. `runs`의 각 항목이 (모델, 노이즈, p, 하이퍼파라미터 덮어쓰기) 한 벌이고, 섹션이 있으면 `make_dataset.py`와 `train.py`가 자동으로 따른다. `--config none`으로 끈다.
 - `pipeline` 파이프라인 고정 설정이다. `conda_env`, `codes`, `distances`(코드별 distance 목록), `backends`(코드별 백엔드), `qpu_pubs`, `profile_runs`, `shots`, `train_args`가 있다.
 - `nvidia` NVIDIA pre-decoder 체크포인트 경로(`checkpoint_accurate`, 저장소 루트 기준)다. 파일이 없으면 분석에서 그 행만 빠진다. 받는 방법은 `docs/nvidia_api_notes.md`에 있다.
-- 우선순위는 `config.json` 기본값, CLI 인자, 스윕 run 항목 순으로 뒤가 이긴다.
+- 우선순위는 `config.json` 기본값, CLI 인자, 스윕 run 항목 순으로 뒤가 이긴다. 예외로 `train.py`의 `-n`은 스윕의 `noise`보다 우선한다 (파이프라인이 QPU 캘리브레이션 프로파일로 스윕 모델을 학습할 때 쓴다).
+- 스윕의 학습 노이즈는 확정 결정 15의 세 프로파일(`dp0.001_mf0.01_rf0.01_gd0.008`, `dp0.005_mf0.02_rf0.02_gd0.015`, `dp0.01_mf0.05_rf0.05_gd0.01`)이다.
 # 결과 위치
 ---
 - 데이터셋 `dataset/<code>/<노이즈태그>/{train,test}_<dtag>_c<cycles>_p<p>_X.npz`

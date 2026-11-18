@@ -239,20 +239,30 @@ def _patch_layout(code, backend, distance=3):
 
     heavyhex labels = 37q physical labels; surface labels = the patch's
     LOCAL indices (ALL_COORDS order of surface_def(distance) - the
-    module's existing constant, no new labeling scheme)."""
+    module's existing constant, no new labeling scheme).
+    The label -> device map is the backend's static embedding, used only
+    for legacy runs whose job.json has no initial_layout; it is None
+    when the backend has no static embedding (every run then needs its
+    recorded layout)."""
     if code == "surface":
         from circuits.rotatedSurface.rotatedSurface import (
             surface_def, embedding_for_surface, required_edges_surface)
         S = surface_def(distance)
         ALL_COORDS, L = S.ALL_COORDS, S.L
-        emb_c = embedding_for_surface(backend, distance)
         labels = [L[c] for c in ALL_COORDS]           # d=3: 0..16
-        dev_of = {L[c]: emb_c[c] for c in ALL_COORDS}
         edges = [(L[u], L[v])
                  for u, v in required_edges_surface(distance)]
+        try:
+            emb_c = embedding_for_surface(backend, distance)
+            dev_of = {L[c]: emb_c[c] for c in ALL_COORDS}
+        except RuntimeError:
+            dev_of = None
         return labels, edges, dev_of
-    emb = embedding_for(backend)
-    return list(ALL_PHYS), required_edges(), dict(emb)
+    try:
+        dev_of = dict(embedding_for(backend))
+    except RuntimeError:
+        dev_of = None
+    return list(ALL_PHYS), required_edges(), dev_of
 
 
 # dead-calibration handling: IBM reports failed calibrations as 1.0 (or
@@ -335,9 +345,13 @@ def main():
         if lay and len(lay) == len(labels):
             dev_of = dict(zip(labels, lay))
             lay_src = "run layout"
-        else:
+        elif static_dev_of is not None:
             dev_of = static_dev_of
             lay_src = "static embedding"
+        else:
+            sys.exit(f"{d.name}: job.json has no initial_layout and "
+                     f"{backend} has no static embedding - cannot map "
+                     f"its calibration onto the patch")
         per_run.append(run_to_patch(calib, labels, patch_edges, dev_of))
         print(f"   {d.name} ({sub}, {src}, {lay_src}): "
               f"{len(per_run[-1][0])} readout / {len(per_run[-1][1])} 1q "

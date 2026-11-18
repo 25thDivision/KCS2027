@@ -186,18 +186,14 @@ def required_edges():
 # in validate_backend() and in transpile's initial_layout, so re-targeting a
 # backend is just a new entry here.
 _IDENTITY = {p: p for p in ALL_PHYS}          # Heron numbering (q25-q107)
-_YONSEI = {25: 24, 37: 34, 56: 53, 57: 54,    # Eagle r3, 127q
-           76: 71, 77: 72, 78: 73, 96: 91, 97: 92}
-_YONSEI.update({p: p - 2 for p in range(43, 48)})     # row2
-_YONSEI.update({p: p - 3 for p in range(61, 70)})     # row3
-_YONSEI.update({p: p - 4 for p in range(81, 90)})     # row4
-_YONSEI.update({p: p - 5 for p in range(103, 108)})   # row5
 
+# ibm_yonsei had an entry for its former Eagle r3 (127q heavy-hex)
+# processor. Since 2026-11-18 ibm_yonsei is a Nighthawk (12x10 square
+# lattice); the patch is placed there by circuits/placement.py only.
 EMBEDDINGS = {
     'ibm_boston': _IDENTITY,
     'ibm_aachen': _IDENTITY,
     'ibm_pittsburgh': _IDENTITY,
-    'ibm_yonsei': _YONSEI,
 }
 
 

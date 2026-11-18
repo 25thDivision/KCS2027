@@ -39,6 +39,7 @@ non-Clifford relaxation channels).
 import shutil
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -122,7 +123,8 @@ class AerCalibratedProvider(HardwareProvider):
         from qiskit_aer import AerSimulator
         from qiskit_aer.noise import NoiseModel
         from circuits.heavyhex.fetch_coupling import fetch
-        from hardware.providers.ibm import build_and_place, get_service
+        from hardware.providers.ibm import (
+            build_and_place, get_service, resolve_instance)
 
         require_implemented(code, distance)
         key = (code, normalize_distance(code, distance))
@@ -133,14 +135,20 @@ class AerCalibratedProvider(HardwareProvider):
         keys = load_keys(("ibm_API", "ibm_instance"))
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
         coupling_path = fetch(self.ibm_backend, token=keys["ibm_API"],
-                              instance=keys["ibm_instance"],
+                              instance=resolve_instance(keys,
+                                                        self.ibm_backend),
                               outdir=str(RUNS_DIR))
-        backend = get_service(keys).backend(self.ibm_backend)
+        backend = get_service(keys, self.ibm_backend).backend(
+            self.ibm_backend)
         args = SimpleNamespace(backend=self.ibm_backend, code=code,
                                distance=distance, cycles=cycles,
                                reselect_layout=reselect_layout)
-        qc, layout, placement_info = build_and_place(args, backend,
-                                                     coupling_path)
+        try:
+            qc, layout, placement_info = build_and_place(args, backend,
+                                                         coupling_path)
+        except BaseException:
+            Path(coupling_path).unlink(missing_ok=True)
+            raise
 
         target = restrict_target(backend.target, layout)
         shim = _TargetBackend(target, self.ibm_backend)

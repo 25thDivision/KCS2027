@@ -129,6 +129,47 @@ def circuit_layers(qc, labels):
     return layers
 
 
+def _qubit_fault(dq, calib):
+    """Why device qubit dq fails the exclusion thresholds, or None."""
+    ro = calib["readout"].get(dq)
+    e1 = calib["err1q"].get(dq)
+    t1 = calib["t1"].get(dq)
+    t2 = calib["t2"].get(dq)
+    if not _valid(ro, MAX_READOUT):
+        return f"readout={ro}"
+    if not _valid(e1, MAX_ERR1Q):
+        return f"1q={e1}"
+    if t1 is None or t1 < MIN_T1:
+        return f"T1={t1}"
+    if t2 is None or t2 < MIN_T2:
+        return f"T2={t2}"
+    return None
+
+
+def _edge_fault(de, calib):
+    """Why sorted device edge de fails the 2q threshold, or None."""
+    e2 = calib["err2q"].get(de)
+    return None if _valid(e2, MAX_ERR2Q) else f"2q={e2}"
+
+
+def usable_edges(coupling_edges, calib):
+    """Device edges whose two qubits and the coupler itself pass the
+    exclusion thresholds.
+
+    A placement that touches a dropped qubit or maps a patch edge onto a
+    dropped coupler is excluded by score_placement anyway, so the valid
+    placements on this graph are exactly the valid placements on the
+    device. Searching here keeps the VF2 enumeration cap for valid
+    candidates: on a square lattice the heavy-hex patch has far more
+    than ENUM_CAP embeddings, and the first ENUM_CAP of the full device
+    can all pass through one bad qubit."""
+    bad_q = {q for e in coupling_edges for q in e
+             if _qubit_fault(q, calib) is not None}
+    return [e for e in coupling_edges
+            if e[0] not in bad_q and e[1] not in bad_q
+            and _edge_fault(tuple(sorted(e)), calib) is None]
+
+
 def score_placement(mapping, labels, pattern_edges, layers, calib):
     """(patch label -> device qubit) -> (score, None) or (None, reason).
 
@@ -136,23 +177,14 @@ def score_placement(mapping, labels, pattern_edges, layers, calib):
     gate + idle score."""
     for lb in labels:
         dq = mapping[lb]
-        ro = calib["readout"].get(dq)
-        e1 = calib["err1q"].get(dq)
-        t1 = calib["t1"].get(dq)
-        t2 = calib["t2"].get(dq)
-        if not _valid(ro, MAX_READOUT):
-            return None, f"q{dq}(label {lb}) readout={ro}"
-        if not _valid(e1, MAX_ERR1Q):
-            return None, f"q{dq}(label {lb}) 1q={e1}"
-        if t1 is None or t1 < MIN_T1:
-            return None, f"q{dq}(label {lb}) T1={t1}"
-        if t2 is None or t2 < MIN_T2:
-            return None, f"q{dq}(label {lb}) T2={t2}"
+        why = _qubit_fault(dq, calib)
+        if why is not None:
+            return None, f"q{dq}(label {lb}) {why}"
     for u, v in pattern_edges:
         de = tuple(sorted((mapping[u], mapping[v])))
-        e2 = calib["err2q"].get(de)
-        if not _valid(e2, MAX_ERR2Q):
-            return None, f"edge {de}(labels {u}-{v}) 2q={e2}"
+        why = _edge_fault(de, calib)
+        if why is not None:
+            return None, f"edge {de}(labels {u}-{v}) {why}"
 
     score = 0.0
     for layer in layers:
@@ -214,13 +246,15 @@ def select_placement(labels, pattern_edges, qc, coupling_edges, target,
                      static_mapping=None, cap=ENUM_CAP):
     """Search + score every placement; return a result dict or None.
 
+    The search runs on usable_edges() (bad qubits and couplers removed).
     {mapping, score, runners_up: [(score, sorted qubits)...],
      static_score (or exclusion reason), n_candidates, n_excluded}"""
     calib = calib_from_target(target)
     layers = circuit_layers(qc, labels)
     best = {}                    # frozenset(qubits) -> (score, mapping)
     excluded = 0
-    for mapping in enumerate_placements(pattern_edges, coupling_edges,
+    for mapping in enumerate_placements(pattern_edges,
+                                        usable_edges(coupling_edges, calib),
                                         cap):
         s, why = score_placement(mapping, labels, pattern_edges, layers,
                                  calib)

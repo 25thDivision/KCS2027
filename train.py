@@ -167,8 +167,9 @@ def ensure_coupling_json(backend="ibm_yonsei"):
         import json
         from circuits.heavyhex.fetch_coupling import fetch
         keys = json.load(open(keys_path))
+        from hardware.providers.ibm import resolve_instance
         fetch(backend, token=keys.get("ibm_API"),
-              instance=keys.get("ibm_instance"), outdir=str(_ROOT))
+              instance=resolve_instance(keys, backend), outdir=str(_ROOT))
     except Exception as e:
         print(f"WARNING: coupling fetch failed ({e}) — continuing, "
               f"training doesn't need it.")
@@ -496,13 +497,18 @@ def expand_config(args):
     expansion make_dataset.py uses for the sweep — so one pipeline pass
     generates and trains identical combos. (Explicit -n / run "noise"
     keys still narrow it; without a sweep the plain-CLI default remains
-    the first profile unless --all.)"""
+    the first profile unless --all.)
+    An explicit -n on the command line wins over the sweep's "noise"
+    (the pipeline trains the sweep's models on a QPU calibration profile
+    with --config config.json -n <profile>)."""
     from dataset_generation import load_sweep
     run_list = []
     for run in load_sweep(args.config):
         ra = argparse.Namespace(**vars(args))
         ra.run_name = run.pop("name", "")
         for k, v in run.items():
+            if k == "noise" and args.noise:
+                continue
             setattr(ra, k, v)
         if not ra.noise:
             ra.noise = list(ALL_NOISE)
